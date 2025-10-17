@@ -50,11 +50,11 @@ func ListModels(ctx context.Context, token string) ([]Model, error) {
 // Chat API types (OpenAI-compatible)
 
 type ChatMessage struct {
-	Role       string      `json:"role"`
-	Content    string      `json:"content,omitempty"`
-	Name       string      `json:"name,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 }
 
 type ToolFunction struct {
@@ -74,17 +74,19 @@ type ToolCallFunction struct {
 }
 
 type ToolCall struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Function ToolCallFunction  `json:"function"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
 }
 
 type ChatCompletionRequest struct {
-	Model      string        `json:"model"`
-	Messages   []ChatMessage `json:"messages"`
-	Tools      []Tool        `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
-	Stream     bool          `json:"stream,omitempty"`
+	Model          string        `json:"model"`
+	Messages       []ChatMessage `json:"messages"`
+	Tools          []Tool        `json:"tools,omitempty"`
+	ToolChoice     string        `json:"tool_choice,omitempty"`
+	ResponseFormat any           `json:"response_format,omitempty"`
+	MaxTokens      int           `json:"max_tokens,omitempty"`
+	Stream         bool          `json:"stream,omitempty"`
 }
 
 type Choice struct {
@@ -129,5 +131,3 @@ func CreateChatCompletion(ctx context.Context, token string, reqBody ChatComplet
 	}
 	return &cr, nil
 }
-
-

@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,15 +40,18 @@ func main() {
 		return
 	}
 
-	// System prompt
-	messages := []openrouter.ChatMessage{
-		{Role: "system", Content: "Ты — полезный ассистент. Используй инструменты, когда это уместно. Отвечай по-русски."},
-	}
+	// Select answer format
+	format := selectFormat(reader)
+
+	// System prompt (format-aware)
+	sysPrompt := buildSystemPrompt(format)
+	messages := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}}
 
 	tools := agent.GetToolDefinitions()
+	maxTokens := 512
 	ctx := context.Background()
 
-	fmt.Println("Готово. Введите сообщение (или 'exit' для выхода).")
+	fmt.Println("Готово. Введите сообщение (или 'exit' для выхода). Команды: /help, /format <text|markdown|json>")
 	for {
 		fmt.Print("You> ")
 		line, _ := reader.ReadString('\n')
@@ -59,28 +64,76 @@ func main() {
 			return
 		}
 
+		// Commands handling
+		if strings.HasPrefix(line, "/") {
+			parts := strings.Fields(line)
+			cmd := strings.ToLower(parts[0])
+			switch cmd {
+			case "/help":
+				printHelp()
+			case "/format":
+				if len(parts) < 2 {
+					fmt.Println("Укажите формат: /format text | /format markdown | /format json")
+					break
+				}
+				newFmt := normalizeFormat(parts[1])
+				if newFmt == "" {
+					fmt.Println("Неизвестный формат. Доступно: text, markdown, json")
+					break
+				}
+				format = newFmt
+				// Обновляем системный промпт
+				sysPrompt = buildSystemPrompt(format)
+				messages = append(messages, openrouter.ChatMessage{Role: "system", Content: sysPrompt})
+				fmt.Printf("Формат установлен: %s\n", format)
+			case "/maxtokens", "/max":
+				if len(parts) < 2 {
+					fmt.Println("Укажите число: /max 256")
+					break
+				}
+				if v, err := strconv.Atoi(parts[1]); err == nil && v > 0 {
+					maxTokens = v
+					fmt.Printf("max_tokens установлен: %d\n", maxTokens)
+				} else {
+					fmt.Println("Некорректное значение. Пример: /max 512")
+				}
+			default:
+				fmt.Println("Неизвестная команда. Введите /help для справки.")
+			}
+			continue
+		}
+
 		messages = append(messages, openrouter.ChatMessage{Role: "user", Content: line})
 
 		// Tool-calling loop (max 3 steps)
 		var assistantOut string
 		for step := 0; step < 3; step++ {
+			var assistantMsg openrouter.ChatMessage
 			stopSpin := startSpinner("Думаю…")
-			resp, err := openrouter.CreateChatCompletion(ctx, token, openrouter.ChatCompletionRequest{
+			req := openrouter.ChatCompletionRequest{
 				Model:      model,
 				Messages:   messages,
 				Tools:      tools,
 				ToolChoice: "auto",
-			})
+				MaxTokens:  maxTokens,
+			}
+			// hint model to return JSON if format requires it
+			if strings.HasPrefix(format, "json") {
+				req.ResponseFormat = map[string]any{"type": "json_object"}
+			}
+			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			if err != nil {
 				stopSpin()
 				// Фолбэк: выбранная модель/провайдер не поддерживает инструменты
-				if strings.Contains(strings.ToLower(err.Error()), "support tool use") {
+				errLower := strings.ToLower(err.Error())
+				if strings.Contains(errLower, "support tool use") {
 					fmt.Println("Предупреждение: модель не поддерживает инструменты. Продолжаю без tools…")
 					stopSpin = startSpinner("Думаю…")
-					resp2, err2 := openrouter.CreateChatCompletion(ctx, token, openrouter.ChatCompletionRequest{
-						Model:    model,
-						Messages: messages,
-					})
+					req2 := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens}
+					if strings.HasPrefix(format, "json") {
+						req2.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					resp2, err2 := openrouter.CreateChatCompletion(ctx, token, req2)
 					stopSpin()
 					if err2 != nil || len(resp2.Choices) == 0 {
 						fmt.Printf("Ошибка запроса: %v\n", err2)
@@ -90,16 +143,40 @@ func main() {
 					messages = append(messages, resp2.Choices[0].Message)
 					break
 				}
-				fmt.Printf("Ошибка запроса: %v\n", err)
-				break
+				// Credit/max_tokens issue → reduce and retry once
+				if strings.Contains(errLower, "requires more credits") || strings.Contains(errLower, "fewer max_tokens") {
+					newMax := maxTokens / 2
+					if newMax < 128 {
+						newMax = 128
+					}
+					fmt.Printf("Недостаточно кредитов/слишком большой max_tokens. Понижаю до %d и повторяю…\n", newMax)
+					maxTokens = newMax
+					stopSpin = startSpinner("Думаю…")
+					reqRetry := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens, Tools: tools, ToolChoice: "auto"}
+					if strings.HasPrefix(format, "json") {
+						reqRetry.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					respRetry, errRetry := openrouter.CreateChatCompletion(ctx, token, reqRetry)
+					stopSpin()
+					if errRetry != nil || len(respRetry.Choices) == 0 {
+						fmt.Printf("Ошибка запроса после понижения max_tokens: %v\n", errRetry)
+						break
+					}
+					assistantMsg = respRetry.Choices[0].Message
+					messages = append(messages, assistantMsg)
+				} else {
+					fmt.Printf("Ошибка запроса: %v\n", err)
+					break
+				}
+			} else {
+				stopSpin()
+				if len(resp.Choices) == 0 {
+					fmt.Println("Пустой ответ модели")
+					break
+				}
+				assistantMsg = resp.Choices[0].Message
+				messages = append(messages, assistantMsg)
 			}
-			stopSpin()
-			if len(resp.Choices) == 0 {
-				fmt.Println("Пустой ответ модели")
-				break
-			}
-			assistantMsg := resp.Choices[0].Message
-			messages = append(messages, assistantMsg)
 
 			if len(assistantMsg.ToolCalls) == 0 {
 				assistantOut = assistantMsg.Content
@@ -122,10 +199,11 @@ func main() {
 		if assistantOut == "" {
 			// Try to get final answer after tools
 			stopSpin := startSpinner("Думаю…")
-			resp, err := openrouter.CreateChatCompletion(ctx, token, openrouter.ChatCompletionRequest{
-				Model:    model,
-				Messages: messages,
-			})
+			req := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens}
+			if strings.HasPrefix(format, "json") {
+				req.ResponseFormat = map[string]any{"type": "json_object"}
+			}
+			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			stopSpin()
 			if err == nil && len(resp.Choices) > 0 {
 				assistantOut = resp.Choices[0].Message.Content
@@ -134,6 +212,12 @@ func main() {
 
 		if assistantOut == "" {
 			assistantOut = "(нет ответа)"
+		}
+		// If JSON expected, try to pretty print/validate
+		if strings.HasPrefix(format, "json") {
+			if pretty, ok := tryPrettyJSON(assistantOut); ok {
+				assistantOut = pretty
+			}
 		}
 		fmt.Printf("Agent> %s\n", assistantOut)
 	}
@@ -203,6 +287,66 @@ func selectModel(token string, reader *bufio.Reader) string {
 		return id
 	}
 	return line
+}
+
+func printHelp() {
+	fmt.Println("Доступные команды:")
+	fmt.Println("  /help                      — показать эту справку")
+	fmt.Println("  /format <text|markdown|json> — сменить формат ответа")
+	fmt.Println("  exit | quit                — выйти")
+}
+
+func normalizeFormat(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "text", "1":
+		return "text"
+	case "markdown", "md", "2":
+		return "markdown"
+	case "json", "json:qa_v1", "3":
+		return "json:qa_v1"
+	default:
+		return ""
+	}
+}
+
+func selectFormat(reader *bufio.Reader) string {
+	fmt.Println("Выберите формат ответа: 1) text  2) markdown  3) json (по умолчанию: text)")
+	fmt.Print("Формат: ")
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	switch line {
+	case "2", "markdown":
+		return "markdown"
+	case "3", "json", "json:qa_v1":
+		return "json:qa_v1"
+	default:
+		return "text"
+	}
+}
+
+func buildSystemPrompt(format string) string {
+	base := "Ты — полезный ассистент. Отвечай по-русски. Используй инструменты, когда уместно."
+	if strings.HasPrefix(format, "json") {
+		schema := `{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"},"citations":{"type":"array","items":{"type":"object","required":["url"],"properties":{"url":{"type":"string"},"title":{"type":"string"}}}},"used_tools":{"type":"array","items":{"type":"object","required":["name","result"],"properties":{"name":{"type":"string"},"arguments":{"type":"object"},"result":{"type":"string"}}}},"followups":{"type":"array","items":{"type":"string"}}}}`
+		return base + " Всегда возвращай ТОЛЬКО валидный JSON по схеме qa_v1 без текста вокруг. Схема qa_v1: " + schema
+	}
+	if format == "markdown" {
+		return base + " Отвечай в Markdown (заголовки, списки, ссылки)."
+	}
+	return base
+}
+
+func tryPrettyJSON(s string) (string, bool) {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s, false
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return s, false
+	}
+	return string(b), true
 }
 
 // readSecret reads a line from stdin with echo disabled (Unix/macOS only).
