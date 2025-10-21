@@ -87,6 +87,7 @@ type ChatCompletionRequest struct {
 	ResponseFormat any           `json:"response_format,omitempty"`
 	MaxTokens      int           `json:"max_tokens,omitempty"`
 	Stream         bool          `json:"stream,omitempty"`
+	Stop           []string      `json:"stop,omitempty"`
 }
 
 type Choice struct {

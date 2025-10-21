@@ -51,6 +51,12 @@ func main() {
 	maxTokens := 512
 	ctx := context.Background()
 
+	// TZ mode controls
+	tzMode := false
+	tzEndMarker := "END_OF_TZ"
+	nextUseStop := false
+	lastAnswer := ""
+
 	fmt.Println("Готово. Введите сообщение (или 'exit' для выхода). Команды: /help, /format <text|markdown|json>")
 	for {
 		fmt.Print("You> ")
@@ -65,9 +71,12 @@ func main() {
 		}
 
 		// Commands handling
+		ranCommand := false
+		runNow := false
 		if strings.HasPrefix(line, "/") {
 			parts := strings.Fields(line)
 			cmd := strings.ToLower(parts[0])
+			ranCommand = true
 			switch cmd {
 			case "/help":
 				printHelp()
@@ -97,29 +106,96 @@ func main() {
 				} else {
 					fmt.Println("Некорректное значение. Пример: /max 512")
 				}
+			case "/save":
+				if lastAnswer == "" {
+					fmt.Println("Нет данных для сохранения. Сначала получите ответ агента.")
+					break
+				}
+				var path string
+				if len(parts) >= 2 {
+					path = parts[1]
+				} else {
+					ext := "md"
+					if strings.HasPrefix(format, "json") {
+						ext = "json"
+					}
+					path = fmt.Sprintf("TZ_%s.%s", time.Now().Format("20060102_150405"), ext)
+				}
+				if err := os.WriteFile(path, []byte(lastAnswer), 0644); err != nil {
+					fmt.Printf("Ошибка сохранения: %v\n", err)
+				} else {
+					fmt.Printf("Сохранено: %s\n", path)
+				}
+			case "/tz":
+				if len(parts) < 2 {
+					fmt.Println("Использование: /tz on | /tz off | /tz finalize")
+					break
+				}
+				sub := strings.ToLower(parts[1])
+				switch sub {
+				case "on":
+					tzMode = true
+					sysPrompt = buildTZSystemPrompt(format)
+					messages = append(messages, openrouter.ChatMessage{Role: "system", Content: sysPrompt})
+					fmt.Println("Режим ТЗ включён. Модель будет собирать требования и оформлять ТЗ.")
+				case "off":
+					tzMode = false
+					sysPrompt = buildSystemPrompt(format)
+					messages = append(messages, openrouter.ChatMessage{Role: "system", Content: sysPrompt})
+					fmt.Println("Режим ТЗ выключен.")
+				case "finalize":
+					if !tzMode {
+						fmt.Println("Команда доступна только в режиме ТЗ. Включите: /tz on")
+						break
+					}
+					nextUseStop = true
+					messages = append(messages, openrouter.ChatMessage{Role: "user", Content: "Утвердить"})
+					fmt.Printf("Финализирую ТЗ. Будет применён stop-маркер: %s\n", tzEndMarker)
+					runNow = true
+				default:
+					fmt.Println("Неизвестная подкоманда. Использование: /tz on | /tz off | /tz finalize")
+				}
 			default:
 				fmt.Println("Неизвестная команда. Введите /help для справки.")
 			}
-			continue
+			if !runNow {
+				continue
+			}
 		}
 
-		messages = append(messages, openrouter.ChatMessage{Role: "user", Content: line})
+		if !ranCommand {
+			messages = append(messages, openrouter.ChatMessage{Role: "user", Content: line})
+		}
 
-		// Tool-calling loop (max 3 steps)
+		// Tool-calling loop (max 5 steps)
 		var assistantOut string
-		for step := 0; step < 3; step++ {
+		finalizeComplete := false
+		var finalBuffer strings.Builder
+		for step := 0; step < 5; step++ {
 			var assistantMsg openrouter.ChatMessage
 			stopSpin := startSpinner("Думаю…")
+			// Увеличиваем лимит токенов на финальном шаге, чтобы не обрывалось по длине
+			reqMax := maxTokens
+			if nextUseStop && reqMax < 2000 {
+				reqMax = 2000
+			}
 			req := openrouter.ChatCompletionRequest{
 				Model:      model,
 				Messages:   messages,
 				Tools:      tools,
 				ToolChoice: "auto",
-				MaxTokens:  maxTokens,
+				MaxTokens:  reqMax,
 			}
 			// hint model to return JSON if format requires it
 			if strings.HasPrefix(format, "json") {
 				req.ResponseFormat = map[string]any{"type": "json_object"}
+			}
+			// apply stop marker on finalize
+			if nextUseStop {
+				req.Stop = []string{tzEndMarker}
+				// disable tool-use on finalize to force direct final output
+				req.Tools = nil
+				req.ToolChoice = ""
 			}
 			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			if err != nil {
@@ -129,9 +205,15 @@ func main() {
 				if strings.Contains(errLower, "support tool use") {
 					fmt.Println("Предупреждение: модель не поддерживает инструменты. Продолжаю без tools…")
 					stopSpin = startSpinner("Думаю…")
-					req2 := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens}
+					req2 := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: reqMax}
 					if strings.HasPrefix(format, "json") {
 						req2.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					if nextUseStop {
+						req2.Stop = []string{tzEndMarker}
+						// На финале выключаем инструменты
+						req2.Tools = nil
+						req2.ToolChoice = ""
 					}
 					resp2, err2 := openrouter.CreateChatCompletion(ctx, token, req2)
 					stopSpin()
@@ -139,8 +221,20 @@ func main() {
 						fmt.Printf("Ошибка запроса: %v\n", err2)
 						break
 					}
-					assistantOut = resp2.Choices[0].Message.Content
-					messages = append(messages, resp2.Choices[0].Message)
+					finish := resp2.Choices[0].FinishReason
+					assistantMsg = resp2.Choices[0].Message
+					messages = append(messages, assistantMsg)
+					if nextUseStop {
+						finalBuffer.WriteString(assistantMsg.Content)
+					}
+					if nextUseStop && strings.EqualFold(finish, "length") {
+						messages = append(messages, openrouter.ChatMessage{Role: "user", Content: "Продолжай финальный вывод ТЗ с того места, где остановился. Заверши и выведи END_OF_TZ."})
+						continue
+					}
+					if nextUseStop && (strings.EqualFold(finish, "stop") || strings.Contains(assistantMsg.Content, tzEndMarker)) {
+						finalizeComplete = true
+					}
+					assistantOut = assistantMsg.Content
 					break
 				}
 				// Credit/max_tokens issue → reduce and retry once
@@ -152,9 +246,19 @@ func main() {
 					fmt.Printf("Недостаточно кредитов/слишком большой max_tokens. Понижаю до %d и повторяю…\n", newMax)
 					maxTokens = newMax
 					stopSpin = startSpinner("Думаю…")
-					reqRetry := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens, Tools: tools, ToolChoice: "auto"}
+					reqMax = maxTokens
+					if nextUseStop && reqMax < 1500 {
+						reqMax = 1500
+					}
+					reqRetry := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: reqMax, Tools: tools, ToolChoice: "auto"}
 					if strings.HasPrefix(format, "json") {
 						reqRetry.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					if nextUseStop {
+						reqRetry.Stop = []string{tzEndMarker}
+						// disable tools on retry finalize as well
+						reqRetry.Tools = nil
+						reqRetry.ToolChoice = ""
 					}
 					respRetry, errRetry := openrouter.CreateChatCompletion(ctx, token, reqRetry)
 					stopSpin()
@@ -162,8 +266,19 @@ func main() {
 						fmt.Printf("Ошибка запроса после понижения max_tokens: %v\n", errRetry)
 						break
 					}
+					finish := respRetry.Choices[0].FinishReason
 					assistantMsg = respRetry.Choices[0].Message
 					messages = append(messages, assistantMsg)
+					if nextUseStop {
+						finalBuffer.WriteString(assistantMsg.Content)
+					}
+					if nextUseStop && strings.EqualFold(finish, "length") {
+						messages = append(messages, openrouter.ChatMessage{Role: "user", Content: "Продолжай финальный вывод ТЗ с того места, где остановился. Заверши и выведи END_OF_TZ."})
+						continue
+					}
+					if nextUseStop && (strings.EqualFold(finish, "stop") || strings.Contains(assistantMsg.Content, tzEndMarker)) {
+						finalizeComplete = true
+					}
 				} else {
 					fmt.Printf("Ошибка запроса: %v\n", err)
 					break
@@ -174,12 +289,28 @@ func main() {
 					fmt.Println("Пустой ответ модели")
 					break
 				}
+				finish := resp.Choices[0].FinishReason
 				assistantMsg = resp.Choices[0].Message
 				messages = append(messages, assistantMsg)
+				if nextUseStop {
+					finalBuffer.WriteString(assistantMsg.Content)
+				}
+				if nextUseStop && strings.EqualFold(finish, "length") {
+					messages = append(messages, openrouter.ChatMessage{Role: "user", Content: "Продолжай финальный вывод ТЗ с того места, где остановился. Заверши и выведи END_OF_TZ."})
+					continue
+				}
+				if nextUseStop && (strings.EqualFold(finish, "stop") || strings.Contains(assistantMsg.Content, tzEndMarker)) {
+					finalizeComplete = true
+				}
 			}
 
 			if len(assistantMsg.ToolCalls) == 0 {
-				assistantOut = assistantMsg.Content
+				// если финализируем — берём накопленный буфер, иначе — одиночный ответ
+				if nextUseStop {
+					assistantOut = finalBuffer.String()
+				} else {
+					assistantOut = assistantMsg.Content
+				}
 				break
 			}
 
@@ -199,14 +330,50 @@ func main() {
 		if assistantOut == "" {
 			// Try to get final answer after tools
 			stopSpin := startSpinner("Думаю…")
-			req := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: maxTokens}
+			reqMax2 := maxTokens
+			if nextUseStop && reqMax2 < 2000 {
+				reqMax2 = 2000
+			}
+			req := openrouter.ChatCompletionRequest{Model: model, Messages: messages, MaxTokens: reqMax2}
 			if strings.HasPrefix(format, "json") {
 				req.ResponseFormat = map[string]any{"type": "json_object"}
+			}
+			if nextUseStop {
+				req.Stop = []string{tzEndMarker}
+				// и здесь тоже фиксируем без tools
+				req.Tools = nil
+				req.ToolChoice = ""
 			}
 			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			stopSpin()
 			if err == nil && len(resp.Choices) > 0 {
-				assistantOut = resp.Choices[0].Message.Content
+				if nextUseStop {
+					assistantOut = resp.Choices[0].Message.Content
+				} else {
+					assistantOut = resp.Choices[0].Message.Content
+				}
+			}
+		}
+
+		// Если финализация — используем буфер и завершаем
+		if nextUseStop {
+			buf := finalBuffer.String()
+			if buf != "" {
+				assistantOut = buf
+			}
+			if finalizeComplete || strings.Contains(assistantOut, tzEndMarker) {
+				nextUseStop = false
+			}
+		}
+
+		// Сохраняем последний ответ и автосохранение ТЗ в файл при финализации
+		lastAnswer = assistantOut
+		justFinalized := tzMode && (finalizeComplete || strings.Contains(assistantOut, tzEndMarker))
+		if justFinalized {
+			if path, err := saveFinalTZ(assistantOut, format); err == nil {
+				fmt.Printf("[auto-save] ТЗ сохранено: %s\n", path)
+			} else {
+				fmt.Printf("[auto-save] Не удалось сохранить ТЗ: %v\n", err)
 			}
 		}
 
@@ -234,6 +401,17 @@ func selectModel(token string, reader *bufio.Reader) string {
 		return strings.TrimSpace(line)
 	}
 
+	// Рекомендуемые модели (предпочтения и стабильность JSON/tool-use)
+	recommended := []string{
+		"anthropic/claude-3.5-sonnet",
+		"openai/gpt-4o-mini",
+		"openrouter/auto",
+	}
+	recSet := map[string]struct{}{}
+	for _, id := range recommended {
+		recSet[id] = struct{}{}
+	}
+
 	// Разделим модели: бесплатные (по признаку ":free" в ID) и платные
 	var freeIDs []string
 	var paidIDs []string
@@ -256,12 +434,24 @@ func selectModel(token string, reader *bufio.Reader) string {
 	paidShow := limit(paidIDs, 15)
 
 	// Построим единую нумерацию
-	fmt.Println("Доступные модели (15 бесплатных и 15 платных, если доступны):")
+	fmt.Println("Доступные модели:")
 	idx := 1
 	indexToID := make(map[string]string)
+	// Секция: Рекомендуемые
+	if len(recommended) > 0 {
+		fmt.Println("Рекомендуемые:")
+		for _, id := range recommended {
+			fmt.Printf("%2d) %s\n", idx, id)
+			indexToID[fmt.Sprintf("%d", idx)] = id
+			idx++
+		}
+	}
 	if len(freeShow) > 0 {
 		fmt.Println("Бесплатные:")
 		for _, id := range freeShow {
+			if _, ok := recSet[id]; ok { // пропустим дубликаты из рекомендуемых
+				continue
+			}
 			fmt.Printf("%2d) %s\n", idx, id)
 			indexToID[fmt.Sprintf("%d", idx)] = id
 			idx++
@@ -270,6 +460,9 @@ func selectModel(token string, reader *bufio.Reader) string {
 	if len(paidShow) > 0 {
 		fmt.Println("Платные:")
 		for _, id := range paidShow {
+			if _, ok := recSet[id]; ok { // пропустим дубликаты из рекомендуемых
+				continue
+			}
 			fmt.Printf("%2d) %s\n", idx, id)
 			indexToID[fmt.Sprintf("%d", idx)] = id
 			idx++
@@ -293,6 +486,8 @@ func printHelp() {
 	fmt.Println("Доступные команды:")
 	fmt.Println("  /help                      — показать эту справку")
 	fmt.Println("  /format <text|markdown|json> — сменить формат ответа")
+	fmt.Println("  /tz on|off|finalize       — режим подготовки ТЗ и финализация по маркеру")
+	fmt.Println("  /save [path]              — сохранить последний ответ в файл")
 	fmt.Println("  exit | quit                — выйти")
 }
 
@@ -335,6 +530,31 @@ func buildSystemPrompt(format string) string {
 		return base + " Отвечай в Markdown (заголовки, списки, ссылки)."
 	}
 	return base
+}
+
+func buildTZSystemPrompt(format string) string {
+	// Сжатая инструкция BA-режима с маркером финала
+	base := "Ты — бизнес-аналитик. Сначала собираешь требования, затем оформляешь полное ТЗ. Работаешь циклами: задать до 3 уточняющих вопросов → обновить черновик секций → проверить чек-лист полноты → запросить подтверждение → итог. Если пользователь напишет ‘Утвердить’ или не ответит два шага подряд, выдай финальный результат. Финальный ответ строго заканчивай строкой END_OF_TZ. Всегда отвечай по-русски. Не раскрывай внутренние рассуждения."
+	if strings.HasPrefix(format, "json") {
+		// В ТЗ-режиме JSON может использоваться для структурированного итога
+		return base + " Если запрошен JSON-формат, возвращай валидный JSON по запрошенной схеме без текста вокруг."
+	}
+	if format == "markdown" {
+		return base + " Оформляй ответы в Markdown."
+	}
+	return base
+}
+
+func saveFinalTZ(content, format string) (string, error) {
+	ext := "md"
+	if strings.HasPrefix(format, "json") {
+		ext = "json"
+	}
+	name := fmt.Sprintf("TZ_%s.%s", time.Now().Format("20060102_150405"), ext)
+	if err := os.WriteFile(name, []byte(content), 0644); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func tryPrettyJSON(s string) (string, bool) {
