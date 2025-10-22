@@ -49,6 +49,7 @@ func main() {
 
 	tools := agent.GetToolDefinitions()
 	maxTokens := 512
+	temperature := 0.3
 	ctx := context.Background()
 
 	// TZ mode controls
@@ -106,6 +107,46 @@ func main() {
 				} else {
 					fmt.Println("Некорректное значение. Пример: /max 512")
 				}
+			case "/temp":
+				if len(parts) < 2 {
+					fmt.Println("Укажите температуру: /temp 0.0..1.5 (по умолчанию 0.3)")
+					break
+				}
+				if v, err := strconv.ParseFloat(parts[1], 64); err == nil && v >= 0 && v <= 2 {
+					temperature = v
+					fmt.Printf("temperature установлен: %.2f\n", temperature)
+				} else {
+					fmt.Println("Некорректное значение. Пример: /temp 0.7")
+				}
+			case "/temps":
+				// Usage: /temps "один и тот же запрос"
+				joined := strings.TrimSpace(line[len("/temps"):])
+				prompt := strings.Trim(joined, " \"')")
+				if prompt == "" {
+					fmt.Println("Использование: /temps \"ваш запрос\"")
+					break
+				}
+				// Изолируем контекст: system + текущий системный промпт, без истории диалога
+				baseMsgs := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}, {Role: "user", Content: prompt}}
+				temps := []float64{0.0, 0.7, 1.2}
+				for _, t := range temps {
+					fmt.Printf("\n--- temperature=%.1f ---\n", t)
+					req := openrouter.ChatCompletionRequest{Model: model, Messages: baseMsgs, MaxTokens: maxTokens, Temperature: t}
+					if strings.HasPrefix(format, "json") {
+						req.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					resp, err := openrouter.CreateChatCompletion(ctx, token, req)
+					if err != nil || len(resp.Choices) == 0 {
+						fmt.Printf("Ошибка: %v\n", err)
+						continue
+					}
+					out := resp.Choices[0].Message.Content
+					fmt.Printf("%s\n", out)
+					// авто-сохранение
+					fname := fmt.Sprintf("temps_%.1f_%s.txt", t, time.Now().Format("20060102_150405"))
+					_ = os.WriteFile(fname, []byte(out), 0644)
+				}
+				continue
 			case "/save":
 				if lastAnswer == "" {
 					fmt.Println("Нет данных для сохранения. Сначала получите ответ агента.")
@@ -197,6 +238,8 @@ func main() {
 				req.Tools = nil
 				req.ToolChoice = ""
 			}
+			// apply current temperature
+			req.Temperature = temperature
 			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			if err != nil {
 				stopSpin()
@@ -215,6 +258,8 @@ func main() {
 						req2.Tools = nil
 						req2.ToolChoice = ""
 					}
+					// температура в фолбэке
+					req2.Temperature = temperature
 					resp2, err2 := openrouter.CreateChatCompletion(ctx, token, req2)
 					stopSpin()
 					if err2 != nil || len(resp2.Choices) == 0 {
@@ -260,6 +305,8 @@ func main() {
 						reqRetry.Tools = nil
 						reqRetry.ToolChoice = ""
 					}
+					// температура в ретрае
+					reqRetry.Temperature = temperature
 					respRetry, errRetry := openrouter.CreateChatCompletion(ctx, token, reqRetry)
 					stopSpin()
 					if errRetry != nil || len(respRetry.Choices) == 0 {
@@ -344,6 +391,8 @@ func main() {
 				req.Tools = nil
 				req.ToolChoice = ""
 			}
+			// применяем температуру и в финальном запросе
+			req.Temperature = temperature
 			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
 			stopSpin()
 			if err == nil && len(resp.Choices) > 0 {
