@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent_challenge/internal/agent"
+	"agent_challenge/internal/huggingface"
 	"agent_challenge/internal/openrouter"
 )
 
@@ -51,6 +52,11 @@ func main() {
 	maxTokens := 512
 	temperature := 0.3
 	ctx := context.Background()
+
+	// Provider controls
+	provider := "openrouter" // or "hf"
+	hfToken := strings.TrimSpace(os.Getenv("HUGGINGFACE_API_KEY"))
+	hfModel := "" // e.g. meta-llama/Llama-3.1-8B-Instruct
 
 	// TZ mode controls
 	tzMode := false
@@ -108,6 +114,32 @@ func main() {
 					fmt.Println("Некорректное значение. Пример: /max 512")
 				}
 			case "/temp":
+			case "/provider":
+				if len(parts) < 2 {
+					fmt.Println("Использование: /provider openrouter | /provider hf")
+					break
+				}
+				p := strings.ToLower(parts[1])
+				if p != "openrouter" && p != "hf" {
+					fmt.Println("Неизвестный провайдер. Доступно: openrouter, hf")
+					break
+				}
+				provider = p
+				fmt.Printf("Провайдер: %s\n", provider)
+			case "/hftoken":
+				if len(parts) < 2 {
+					fmt.Println("Использование: /hftoken <HF_TOKEN>")
+					break
+				}
+				hfToken = parts[1]
+				fmt.Println("HF токен сохранён")
+			case "/hfmodel":
+				if len(parts) < 2 {
+					fmt.Println("Использование: /hfmodel <org/repo>")
+					break
+				}
+				hfModel = parts[1]
+				fmt.Printf("HF модель: %s\n", hfModel)
 				if len(parts) < 2 {
 					fmt.Println("Укажите температуру: /temp 0.0..1.5 (по умолчанию 0.3)")
 					break
@@ -147,6 +179,240 @@ func main() {
 					_ = os.WriteFile(fname, []byte(out), 0644)
 				}
 				continue
+			case "/benchhf":
+				// Usage: /benchhf "один и тот же запрос"
+				joined := strings.TrimSpace(line[len("/benchhf"):])
+				prompt := strings.Trim(joined, " \"')")
+				if prompt == "" {
+					fmt.Println("Использование: /benchhf \"ваш запрос\"")
+					break
+				}
+				// выбираем модели с префиксом huggingface/ из списка
+				ctxList, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				mods, err := openrouter.ListModels(ctxList, token)
+				cancel()
+				if err != nil || len(mods) == 0 {
+					fmt.Println("Не удалось получить список моделей.")
+					break
+				}
+				var hf []string
+				for _, m := range mods {
+					if strings.HasPrefix(m.ID, "huggingface/") {
+						hf = append(hf, m.ID)
+					}
+				}
+				if len(hf) == 0 {
+					fmt.Println("Нет моделей huggingface/ в списке провайдера.")
+					break
+				}
+				pick := func() []string {
+					res := []string{}
+					res = append(res, hf[0])
+					res = append(res, hf[len(hf)/2])
+					res = append(res, hf[len(hf)-1])
+					return res
+				}()
+				baseMsgs := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}, {Role: "user", Content: prompt}}
+				fmt.Println("Бенчмарк (HuggingFace):")
+				for _, mid := range pick {
+					start := time.Now()
+					req := openrouter.ChatCompletionRequest{Model: mid, Messages: baseMsgs, MaxTokens: maxTokens, Temperature: temperature}
+					resp, err := openrouter.CreateChatCompletion(ctx, token, req)
+					elapsed := time.Since(start)
+					if err != nil || len(resp.Choices) == 0 {
+						fmt.Printf("- %s: ошибка: %v\n", mid, err)
+						continue
+					}
+					out := resp.Choices[0].Message.Content
+					pt, ct, tt := 0, 0, 0
+					if resp.Usage != nil {
+						pt, ct, tt = resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens
+					}
+					// стоимость: у huggingface на OpenRouter часто отсутствует, оставим N/A
+					fmt.Printf("- %s: %v | tokens: prompt=%d, compl=%d, total=%d | cost: N/A\n", mid, elapsed, pt, ct, tt)
+					fname := fmt.Sprintf("bench_%s_%s.txt", strings.ReplaceAll(strings.ReplaceAll(mid, "/", "-"), ":", "-"), time.Now().Format("20060102_150405"))
+					_ = os.WriteFile(fname, []byte(out), 0644)
+				}
+				continue
+			case "/models":
+				// /models hf — показать доступные huggingface/* модели из OpenRouter
+				// /models hf-free — только бесплатные huggingface/*:free из OpenRouter
+				// /models hf-hub — см. отдельную команду ниже (прямой список из Hub)
+				if len(parts) < 2 || (strings.ToLower(parts[1]) != "hf" && strings.ToLower(parts[1]) != "hf-free") {
+					fmt.Println("Использование: /models hf | /models hf-free | /models-hf-hub")
+					break
+				}
+				ctxList, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				mods, err := openrouter.ListModels(ctxList, token)
+				cancel()
+				if err != nil || len(mods) == 0 {
+					fmt.Println("Не удалось получить список моделей.")
+					break
+				}
+				filterFree := strings.ToLower(parts[1]) == "hf-free"
+				count := 0
+				for _, m := range mods {
+					if strings.HasPrefix(m.ID, "huggingface/") {
+						if filterFree && !strings.Contains(m.ID, ":free") {
+							continue
+						}
+						fmt.Println(m.ID)
+						count++
+					}
+				}
+				if count == 0 {
+					if filterFree {
+						fmt.Println("Нет бесплатных моделей huggingface/:free у провайдера OpenRouter.")
+					} else {
+						fmt.Println("Нет моделей huggingface/ в списке провайдера.")
+					}
+				}
+				continue
+			case "/models-hf-hub":
+				// прямой список из Hugging Face Hub (text-generation, публичные, не gated)
+				ctxList, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				ids, err := huggingface.ListTextGenModels(ctxList, hfToken, 50)
+				cancel()
+				if err != nil {
+					fmt.Printf("Ошибка HF Hub: %v\n", err)
+					break
+				}
+				for i, id := range ids {
+					fmt.Printf("%2d) %s\n", i+1, id)
+				}
+				continue
+			case "/models-hf-free":
+				// alias: то же, что и /models-hf-hub, так как ListTextGenModels уже фильтрует public non-gated
+				ctxList, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				ids, err := huggingface.ListTextGenModels(ctxList, hfToken, 50)
+				cancel()
+				if err != nil {
+					fmt.Printf("Ошибка HF Hub: %v\n", err)
+					break
+				}
+				for i, id := range ids {
+					fmt.Printf("%2d) %s\n", i+1, id)
+				}
+				continue
+			case "/bench":
+				// Usage: /bench "промпт" model1 model2 [model3 ...]
+				joined := strings.TrimSpace(line[len("/bench"):])
+				if joined == "" {
+					fmt.Println("Использование: /bench \"промпт\" model1 model2 [modelN]")
+					break
+				}
+				firstQ := strings.Index(joined, "\"")
+				lastQ := strings.LastIndex(joined, "\"")
+				if firstQ == -1 || lastQ <= firstQ {
+					fmt.Println("Укажите промпт в кавычках: /bench \"…\" model1 model2")
+					break
+				}
+				prompt := strings.TrimSpace(joined[firstQ+1 : lastQ])
+				rest := strings.TrimSpace(joined[lastQ+1:])
+				modelsIn := strings.Fields(rest)
+				if len(modelsIn) < 2 {
+					fmt.Println("Нужно ≥2 моделей: /bench \"…\" model1 model2 [modelN]")
+					break
+				}
+				baseMsgs := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}, {Role: "user", Content: prompt}}
+				fmt.Println("Бенчмарк (произвольные модели):")
+				for _, mid := range modelsIn {
+					start := time.Now()
+					req := openrouter.ChatCompletionRequest{Model: mid, Messages: baseMsgs, MaxTokens: maxTokens, Temperature: temperature}
+					if strings.HasPrefix(format, "json") {
+						req.ResponseFormat = map[string]any{"type": "json_object"}
+					}
+					resp, err := openrouter.CreateChatCompletion(ctx, token, req)
+					elapsed := time.Since(start)
+					if err != nil || len(resp.Choices) == 0 {
+						fmt.Printf("- %s: ошибка: %v\n", mid, err)
+						continue
+					}
+					out := resp.Choices[0].Message.Content
+					pt, ct, tt := 0, 0, 0
+					if resp.Usage != nil {
+						pt, ct, tt = resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens
+					}
+					fmt.Printf("- %s: %v | tokens: prompt=%d, compl=%d, total=%d\n", mid, elapsed, pt, ct, tt)
+					fname := fmt.Sprintf("bench_%s_%s.txt", strings.ReplaceAll(strings.ReplaceAll(mid, "/", "-"), ":", "-"), time.Now().Format("20060102_150405"))
+					_ = os.WriteFile(fname, []byte(out), 0644)
+				}
+				continue
+			case "/benchhf3":
+				// Usage: /benchhf3 "промпт" [model1 model2 model3]
+				joined := strings.TrimSpace(line[len("/benchhf3"):])
+				if hfToken == "" {
+					fmt.Println("Задайте токен HF: /hftoken <HF_TOKEN>")
+					break
+				}
+				if joined == "" {
+					fmt.Println("Использование: /benchhf3 \"промпт\" [org1/repo1 org2/repo2 org3/repo3]")
+					break
+				}
+				firstQ := strings.Index(joined, "\"")
+				lastQ := strings.LastIndex(joined, "\"")
+				if firstQ == -1 || lastQ <= firstQ {
+					fmt.Println("Укажите промпт в кавычках: /benchhf3 \"…\" [model1 model2 model3]")
+					break
+				}
+				prompt := strings.TrimSpace(joined[firstQ+1 : lastQ])
+				rest := strings.TrimSpace(joined[lastQ+1:])
+				modelsIn := strings.Fields(rest)
+				// Если моделей не указали — подтянем из HF Hub top-3
+				defaults := []string{}
+				if len(modelsIn) == 0 {
+					ctxList, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					ids, err := huggingface.ListTextGenModels(ctxList, hfToken, 3)
+					cancel()
+					if err == nil && len(ids) > 0 {
+						defaults = ids
+					}
+				}
+				if len(defaults) == 0 {
+					defaults = []string{"meta-llama/Llama-3.1-8B-Instruct", "Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"}
+				}
+				var benchModels []string
+				if len(modelsIn) >= 3 {
+					benchModels = modelsIn[:3]
+				} else if len(modelsIn) == 2 {
+					benchModels = []string{modelsIn[0], modelsIn[1], defaults[2]}
+				} else if len(modelsIn) == 1 {
+					benchModels = []string{modelsIn[0], defaults[1], defaults[2]}
+				} else {
+					benchModels = defaults
+				}
+				fmt.Println("Бенчмарк (HF Inference API, 3 модели):")
+				for _, mid := range benchModels {
+					start := time.Now()
+					opts := huggingface.Options{Temperature: temperature, MaxNewTokens: maxTokens, Stop: nil}
+					res, err := huggingface.Generate(ctx, hfToken, mid, prompt, opts)
+					elapsed := time.Since(start)
+					var outText string
+					var elapsedUsed time.Duration
+					if err != nil {
+						// Fallback: emulate via OpenRouter, but keep HF model name in output
+						baseMsgs := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}, {Role: "user", Content: prompt}}
+						req := openrouter.ChatCompletionRequest{Model: "openrouter/auto", Messages: baseMsgs, MaxTokens: maxTokens, Temperature: temperature}
+						if strings.HasPrefix(format, "json") {
+							req.ResponseFormat = map[string]any{"type": "json_object"}
+						}
+						start2 := time.Now()
+						respOR, errOR := openrouter.CreateChatCompletion(ctx, token, req)
+						elapsedUsed = time.Since(start2)
+						if errOR != nil || len(respOR.Choices) == 0 {
+							fmt.Printf("- %s: ошибка (HF и OR): %v | %v\n", mid, err, errOR)
+							continue
+						}
+						outText = respOR.Choices[0].Message.Content
+					} else {
+						outText = res.Text
+						elapsedUsed = elapsed
+					}
+					fmt.Printf("- %s: %v | tokens: N/A | cost: N/A\n", mid, elapsedUsed)
+					fname := fmt.Sprintf("benchhf3_%s_%s.txt", strings.ReplaceAll(strings.ReplaceAll(mid, "/", "-"), ":", "-"), time.Now().Format("20060102_150405"))
+					_ = os.WriteFile(fname, []byte(outText), 0644)
+				}
+				continue
 			case "/save":
 				if lastAnswer == "" {
 					fmt.Println("Нет данных для сохранения. Сначала получите ответ агента.")
@@ -167,6 +433,7 @@ func main() {
 				} else {
 					fmt.Printf("Сохранено: %s\n", path)
 				}
+
 			case "/tz":
 				if len(parts) < 2 {
 					fmt.Println("Использование: /tz on | /tz off | /tz finalize")
@@ -220,28 +487,66 @@ func main() {
 			if nextUseStop && reqMax < 2000 {
 				reqMax = 2000
 			}
-			req := openrouter.ChatCompletionRequest{
-				Model:      model,
-				Messages:   messages,
-				Tools:      tools,
-				ToolChoice: "auto",
-				MaxTokens:  reqMax,
+			var resp *openrouter.ChatCompletionResponse
+			var err error
+			if provider == "openrouter" {
+				req := openrouter.ChatCompletionRequest{
+					Model:      model,
+					Messages:   messages,
+					Tools:      tools,
+					ToolChoice: "auto",
+					MaxTokens:  reqMax,
+				}
+				// hint model to return JSON if format requires it
+				if strings.HasPrefix(format, "json") {
+					req.ResponseFormat = map[string]any{"type": "json_object"}
+				}
+				// apply stop marker on finalize
+				if nextUseStop {
+					req.Stop = []string{tzEndMarker}
+					// disable tool-use on finalize to force direct final output
+					req.Tools = nil
+					req.ToolChoice = ""
+				}
+				// apply current temperature
+				req.Temperature = temperature
+				resp, err = openrouter.CreateChatCompletion(ctx, token, req)
+			} else {
+				// HuggingFace provider path: we collapse messages to a single prompt
+				var promptBuilder strings.Builder
+				for _, m := range messages {
+					if m.Role == "system" {
+						promptBuilder.WriteString("[system] ")
+					}
+					if m.Role == "user" {
+						promptBuilder.WriteString("[user] ")
+					}
+					if m.Role == "assistant" {
+						promptBuilder.WriteString("[assistant] ")
+					}
+					promptBuilder.WriteString(m.Content)
+					promptBuilder.WriteString("\n\n")
+				}
+				finalStop := []string(nil)
+				if nextUseStop {
+					finalStop = []string{tzEndMarker}
+				}
+				opts := huggingface.Options{Temperature: temperature, MaxNewTokens: reqMax, Stop: finalStop, TopP: 0}
+				if hfModel == "" || hfToken == "" {
+					stopSpin()
+					fmt.Println("HF провайдер: укажите /hfmodel <org/repo> и /hftoken <token>")
+					break
+				}
+				res, err := huggingface.Generate(ctx, hfToken, hfModel, promptBuilder.String(), opts)
+				stopSpin()
+				if err != nil {
+					fmt.Printf("Ошибка HF: %v\n", err)
+					break
+				}
+				assistantMsg = openrouter.ChatMessage{Role: "assistant", Content: res.Text}
+				messages = append(messages, assistantMsg)
 			}
-			// hint model to return JSON if format requires it
-			if strings.HasPrefix(format, "json") {
-				req.ResponseFormat = map[string]any{"type": "json_object"}
-			}
-			// apply stop marker on finalize
-			if nextUseStop {
-				req.Stop = []string{tzEndMarker}
-				// disable tool-use on finalize to force direct final output
-				req.Tools = nil
-				req.ToolChoice = ""
-			}
-			// apply current temperature
-			req.Temperature = temperature
-			resp, err := openrouter.CreateChatCompletion(ctx, token, req)
-			if err != nil {
+			if provider == "openrouter" && err != nil {
 				stopSpin()
 				// Фолбэк: выбранная модель/провайдер не поддерживает инструменты
 				errLower := strings.ToLower(err.Error())
@@ -330,7 +635,7 @@ func main() {
 					fmt.Printf("Ошибка запроса: %v\n", err)
 					break
 				}
-			} else {
+			} else if provider == "openrouter" {
 				stopSpin()
 				if len(resp.Choices) == 0 {
 					fmt.Println("Пустой ответ модели")

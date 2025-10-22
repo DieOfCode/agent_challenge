@@ -103,6 +103,14 @@ type ChatCompletionResponse struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
+	Usage   *Usage   `json:"usage,omitempty"`
+}
+
+// Usage tokens information (OpenAI-compatible). Not all providers return it.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 func CreateChatCompletion(ctx context.Context, token string, reqBody ChatCompletionRequest) (*ChatCompletionResponse, error) {
