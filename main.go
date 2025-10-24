@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func main() {
 			case "/format":
 				if len(parts) < 2 {
 					fmt.Println("Укажите формат: /format text | /format markdown | /format json")
-					break
+					// no-op
 				}
 				newFmt := normalizeFormat(parts[1])
 				if newFmt == "" {
@@ -114,6 +115,17 @@ func main() {
 					fmt.Println("Некорректное значение. Пример: /max 512")
 				}
 			case "/temp":
+				if len(parts) < 2 {
+					fmt.Println("Укажите температуру: /temp 0.0..1.5 (по умолчанию 0.3)")
+					break
+				}
+				if v, err := strconv.ParseFloat(parts[1], 64); err == nil && v >= 0 && v <= 2 {
+					temperature = v
+					fmt.Printf("temperature установлен: %.2f\n", temperature)
+				} else {
+					fmt.Println("Некорректное значение. Пример: /temp 0.7")
+				}
+				break
 			case "/provider":
 				if len(parts) < 2 {
 					fmt.Println("Использование: /provider openrouter | /provider hf")
@@ -412,6 +424,83 @@ func main() {
 					fname := fmt.Sprintf("benchhf3_%s_%s.txt", strings.ReplaceAll(strings.ReplaceAll(mid, "/", "-"), ":", "-"), time.Now().Format("20060102_150405"))
 					_ = os.WriteFile(fname, []byte(outText), 0644)
 				}
+				continue
+			case "/chaincheck":
+				// /chaincheck "<задача>" — два вызова: прямой и "Решай пошагово" через OpenRouter
+				joined := strings.TrimSpace(line[len("/chaincheck"):])
+				firstQ := strings.Index(joined, "\"")
+				lastQ := strings.LastIndex(joined, "\"")
+				if firstQ == -1 || lastQ <= firstQ {
+					fmt.Println("Использование: /chaincheck \"<задача>\"")
+					break
+				}
+				task := strings.TrimSpace(joined[firstQ+1 : lastQ])
+				baseMsgs := []openrouter.ChatMessage{{Role: "system", Content: sysPrompt}}
+				// 1) прямой ответ
+				req1 := openrouter.ChatCompletionRequest{Model: model, Messages: append(baseMsgs, openrouter.ChatMessage{Role: "user", Content: task}), MaxTokens: maxTokens, Temperature: temperature}
+				resp1, err1 := openrouter.CreateChatCompletion(ctx, token, req1)
+				var direct string
+				if err1 == nil && len(resp1.Choices) > 0 {
+					direct = resp1.Choices[0].Message.Content
+				} else {
+					direct = fmt.Sprintf("(ошибка: %v)", err1)
+				}
+				// 2) шаг за шагом
+				promptStep := task + "\n\nРешай пошагово."
+				req2 := openrouter.ChatCompletionRequest{Model: model, Messages: append(baseMsgs, openrouter.ChatMessage{Role: "user", Content: promptStep}), MaxTokens: maxTokens, Temperature: temperature}
+				resp2, err2 := openrouter.CreateChatCompletion(ctx, token, req2)
+				var stepByStep string
+				if err2 == nil && len(resp2.Choices) > 0 {
+					stepByStep = resp2.Choices[0].Message.Content
+				} else {
+					stepByStep = fmt.Sprintf("(ошибка: %v)", err2)
+				}
+				fmt.Println("\n— ChainCheck —")
+				fmt.Println("Задача:", task)
+				fmt.Println("Прямой ответ:")
+				fmt.Println(direct)
+				fmt.Println("\nОтвет (решай пошагово):")
+				fmt.Println(stepByStep)
+				// Попытка авто‑проверки ax + b = c
+				if ok, a, b, c := tryParseLinearEq(task); ok {
+					x := float64(c-b) / float64(a)
+					fmt.Printf("\nПроверка ax+b=c: a=%d b=%d c=%d → x=%.4g\n", a, b, c, x)
+				}
+				continue
+			case "/pair":
+				// /pair "Задача1" -> Agent1 (структурирует JSON) → Agent2 (пишет вывод на основе JSON)
+				joined := strings.TrimSpace(line[len("/pair"):])
+				firstQ := strings.Index(joined, "\"")
+				lastQ := strings.LastIndex(joined, "\"")
+				if firstQ == -1 || lastQ <= firstQ {
+					fmt.Println("Использование: /pair \"<задача для агента 1>\"")
+					break
+				}
+				goal := strings.TrimSpace(joined[firstQ+1 : lastQ])
+				// Agent 1 system + формат JSON
+				sys1 := "Ты Агент 1. Преобразуй вход в структурированный JSON с полями: summary, findings[], next_steps[]. Кратко и без лишнего."
+				msgs1 := []openrouter.ChatMessage{{Role: "system", Content: sys1}, {Role: "user", Content: goal}}
+				req1 := openrouter.ChatCompletionRequest{Model: model, Messages: msgs1, MaxTokens: maxTokens, Temperature: temperature, ResponseFormat: map[string]any{"type": "json_object"}}
+				resp1, err1 := openrouter.CreateChatCompletion(ctx, token, req1)
+				if err1 != nil || len(resp1.Choices) == 0 {
+					fmt.Printf("Agent1 ошибка: %v\n", err1)
+					break
+				}
+				jsonOut := resp1.Choices[0].Message.Content
+				fmt.Println("\nAgent1 (JSON):")
+				fmt.Println(jsonOut)
+				// Agent 2: употребляет JSON как вход, формирует читабельный текст
+				sys2 := "Ты Агент 2. На основе переданного JSON (summary/findings/next_steps) сформируй понятный читаемый отчёт в Markdown."
+				prompt2 := "Вот JSON от Агент 1:\n\n" + jsonOut + "\n\nСформируй краткий отчёт (заголовок, пункты findings и next steps)."
+				msgs2 := []openrouter.ChatMessage{{Role: "system", Content: sys2}, {Role: "user", Content: prompt2}}
+				req2 := openrouter.ChatCompletionRequest{Model: model, Messages: msgs2, MaxTokens: maxTokens, Temperature: temperature}
+				resp2, err2 := openrouter.CreateChatCompletion(ctx, token, req2)
+				if err2 != nil || len(resp2.Choices) == 0 {
+					fmt.Printf("Agent2 ошибка: %v\n", err2)
+					break
+				}
+				fmt.Println("\nAgent2 (Markdown):")
+				fmt.Println(resp2.Choices[0].Message.Content)
 				continue
 			case "/save":
 				if lastAnswer == "" {
@@ -897,6 +986,26 @@ func buildTZSystemPrompt(format string) string {
 		return base + " Оформляй ответы в Markdown."
 	}
 	return base
+}
+
+// tryParseLinearEq parses simple linear equations like "2x + 6 = 14" into a,b,c of ax + b = c.
+func tryParseLinearEq(s string) (bool, int, int, int) {
+	// Normalize: remove spaces
+	s = strings.ReplaceAll(s, " ", "")
+	// Regex: a x [+|-] b = c, with optional signs, integers
+	re := regexp.MustCompile(`^([+-]?\d+)x([+-]\d+)=([+-]?\d+)$`)
+	m := re.FindStringSubmatch(s)
+	if len(m) != 4 {
+		return false, 0, 0, 0
+	}
+	atoi := func(t string) (int, bool) { v, err := strconv.Atoi(t); return v, err == nil }
+	a, ok1 := atoi(m[1])
+	b, ok2 := atoi(m[2])
+	c, ok3 := atoi(m[3])
+	if !ok1 || !ok2 || !ok3 || a == 0 {
+		return false, 0, 0, 0
+	}
+	return true, a, b, c
 }
 
 func saveFinalTZ(content, format string) (string, error) {

@@ -1,14 +1,14 @@
 package agent
 
 import (
-	"encoding/json"
-	"fmt"
-	"math"
-	"strconv"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "math"
+    "strconv"
+    "strings"
+    "time"
 
-	"agent_challenge/internal/openrouter"
+    "agent_challenge/internal/openrouter"
 )
 
 // GetToolDefinitions returns OpenAI-compatible tool definitions
