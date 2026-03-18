@@ -16,8 +16,10 @@ import (
 const openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []message `json:"messages"`
+	Model     string    `json:"model"`
+	Messages  []message `json:"messages"`
+	MaxTokens int       `json:"max_tokens,omitempty"`
+	Stop      []string  `json:"stop,omitempty"`
 }
 
 type message struct {
@@ -48,6 +50,9 @@ func main() {
 
 	model := flag.String("model", defaultModel, "OpenRouter model")
 	prompt := flag.String("prompt", "", "Prompt text (if empty, will read from stdin)")
+	format := flag.String("format", `JSON object: {"answer":"..."}`, "Explicit output format instruction")
+	maxTokens := flag.Int("max-tokens", 200, "Maximum response tokens")
+	stopSequence := flag.String("stop", "<END>", "Stop sequence")
 	flag.Parse()
 
 	apiKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
@@ -67,12 +72,28 @@ func main() {
 		exitf("empty prompt: use -prompt or pipe text to stdin")
 	}
 
-	reqBody, err := json.Marshal(chatRequest{
+	systemInstruction := fmt.Sprintf(
+		"Answer format: %s\nLength limit: no more than 80 words.\nHard cap: no more than %d tokens.\nAfter the formatted answer, emit stop sequence: %s",
+		strings.TrimSpace(*format),
+		*maxTokens,
+		strings.TrimSpace(*stopSequence),
+	)
+
+	reqPayload := chatRequest{
 		Model: *model,
 		Messages: []message{
+			{Role: "system", Content: systemInstruction},
 			{Role: "user", Content: userPrompt},
 		},
-	})
+	}
+	if *maxTokens > 0 {
+		reqPayload.MaxTokens = *maxTokens
+	}
+	if seq := strings.TrimSpace(*stopSequence); seq != "" {
+		reqPayload.Stop = []string{seq}
+	}
+
+	reqBody, err := json.Marshal(reqPayload)
 	if err != nil {
 		exitf("failed to encode request: %v", err)
 	}
