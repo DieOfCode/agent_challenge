@@ -17,10 +17,11 @@ import (
 const openRouterURL = "https://openrouter.ai/api/v1/chat/completions"
 
 type chatRequest struct {
-	Model     string    `json:"model"`
-	Messages  []message `json:"messages"`
-	MaxTokens int       `json:"max_tokens,omitempty"`
-	Stop      []string  `json:"stop,omitempty"`
+	Model       string    `json:"model"`
+	Messages    []message `json:"messages"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
+	Stop        []string  `json:"stop,omitempty"`
 }
 
 type message struct {
@@ -45,6 +46,14 @@ type methodResult struct {
 	Score  int
 }
 
+type temperatureResult struct {
+	Temperature float64
+	Answer      string
+	Accuracy    int
+	Creativity  int
+	Diversity   int
+}
+
 func main() {
 	if err := loadDotEnv(".env"); err != nil {
 		exitf("failed to load .env: %v", err)
@@ -55,6 +64,11 @@ func main() {
 		case "day3":
 			if err := runDay3Command(os.Args[2:]); err != nil {
 				exitf("day3 failed: %v", err)
+			}
+			return
+		case "day4":
+			if err := runDay4Command(os.Args[2:]); err != nil {
+				exitf("day4 failed: %v", err)
 			}
 			return
 		case "help":
@@ -124,6 +138,7 @@ func runChatCommand(args []string) error {
 			{Role: "user", Content: userPrompt},
 		},
 		*maxTokens,
+		nil,
 		stop,
 		"minimal-go-cli",
 	)
@@ -159,14 +174,14 @@ func runDay3Command(args []string) error {
 
 	direct, err := callOpenRouter(apiKey, *model, []message{
 		{Role: "user", Content: *task},
-	}, 400, nil, "reasoning-day3-cli")
+	}, 400, nil, nil, "reasoning-day3-cli")
 	if err != nil {
 		return fmt.Errorf("direct method failed: %w", err)
 	}
 
 	stepByStep, err := callOpenRouter(apiKey, *model, []message{
 		{Role: "user", Content: "Решай пошагово.\n\nЗадача:\n" + *task},
-	}, 500, nil, "reasoning-day3-cli")
+	}, 500, nil, nil, "reasoning-day3-cli")
 	if err != nil {
 		return fmt.Errorf("step-by-step method failed: %w", err)
 	}
@@ -177,7 +192,7 @@ func runDay3Command(args []string) error {
 			Content: "Составь лучший краткий промпт для точного решения задачи. " +
 				"Верни только сам промпт без пояснений.\n\nЗадача:\n" + *task,
 		},
-	}, 200, nil, "reasoning-day3-cli")
+	}, 200, nil, nil, "reasoning-day3-cli")
 	if err != nil {
 		return fmt.Errorf("prompt-constructor method (phase 1) failed: %w", err)
 	}
@@ -185,7 +200,7 @@ func runDay3Command(args []string) error {
 
 	promptGeneratedSolution, err := callOpenRouter(apiKey, *model, []message{
 		{Role: "user", Content: promptForTask},
-	}, 500, nil, "reasoning-day3-cli")
+	}, 500, nil, nil, "reasoning-day3-cli")
 	if err != nil {
 		return fmt.Errorf("prompt-constructor method (phase 2) failed: %w", err)
 	}
@@ -197,7 +212,7 @@ func runDay3Command(args []string) error {
 				"1) Аналитик\n2) Инженер\n3) Критик\n" +
 				"После этого дай общий вывод.\n\nЗадача:\n" + *task,
 		},
-	}, 900, nil, "reasoning-day3-cli")
+	}, 900, nil, nil, "reasoning-day3-cli")
 	if err != nil {
 		return fmt.Errorf("experts method failed: %w", err)
 	}
@@ -239,13 +254,90 @@ func runDay3Command(args []string) error {
 	return nil
 }
 
-func callOpenRouter(apiKey, model string, messages []message, maxTokens int, stop []string, title string) (string, error) {
+func runDay4Command(args []string) error {
+	fs := flag.NewFlagSet("openrouter-cli day4", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	model := fs.String("model", getDefaultModel(), "OpenRouter model")
+	prompt := fs.String("prompt", `Ответь в одну строку формата: result=<число>; reason=<до 12 слов>; metaphor=<до 7 слов>. Сколько уникальных перестановок у слова LEVEL?`, "Prompt to evaluate across temperatures")
+	expected := fs.String("expected", "result=30", "Expected exact value used for accuracy scoring")
+	maxTokens := fs.Int("max-tokens", 220, "Maximum response tokens for each run")
+	help := fs.Bool("help", false, "Show help")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse day4 flags: %w", err)
+	}
+	if *help {
+		printDay4Usage()
+		return nil
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected day4 arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	apiKey := getAPIKey()
+	temps := []float64{0, 0.7, 1.2}
+	results := make([]temperatureResult, 0, len(temps))
+
+	for _, temp := range temps {
+		t := temp
+		answer, err := callOpenRouter(apiKey, *model, []message{
+			{Role: "user", Content: *prompt},
+		}, *maxTokens, &t, nil, "temperature-day4-cli")
+		if err != nil {
+			return fmt.Errorf("temperature %.1f failed: %w", temp, err)
+		}
+
+		results = append(results, temperatureResult{
+			Temperature: temp,
+			Answer:      answer,
+			Accuracy:    exactAccuracyScore(answer, *expected),
+			Creativity:  creativityScore(answer),
+		})
+	}
+
+	for i := range results {
+		results[i].Diversity = diversityScore(i, results)
+	}
+
+	bestAccuracy := pickBestTemperature(results, func(r temperatureResult) int { return r.Accuracy })
+	bestCreativity := pickBestTemperature(results, func(r temperatureResult) int { return r.Creativity })
+	bestDiversity := pickBestTemperature(results, func(r temperatureResult) int { return r.Diversity })
+
+	fmt.Println("=== День 4: Температура ===")
+	fmt.Printf("Модель: %s\n", *model)
+	fmt.Printf("Промпт: %s\n\n", *prompt)
+
+	for _, r := range results {
+		fmt.Printf("--- temperature = %.1f ---\n%s\n\n", r.Temperature, strings.TrimSpace(r.Answer))
+	}
+
+	fmt.Println("=== Сравнение ===")
+	for _, r := range results {
+		fmt.Printf("temperature=%.1f -> accuracy=%d, creativity=%d, diversity=%d\n", r.Temperature, r.Accuracy, r.Creativity, r.Diversity)
+	}
+	fmt.Printf("Лучшая точность: temperature=%.1f\n", bestAccuracy)
+	fmt.Printf("Лучшая креативность: temperature=%.1f\n", bestCreativity)
+	fmt.Printf("Лучшее разнообразие: temperature=%.1f\n", bestDiversity)
+
+	fmt.Println("=== Для каких задач подходит ===")
+	fmt.Println("temperature=0.0 -> точные, формальные и повторяемые задачи: извлечение фактов, проверка формул, детерминированные ответы.")
+	fmt.Println("temperature=0.7 -> универсальный баланс: объяснения, черновики текстов, продуктовые описания, где важны и точность, и живость.")
+	fmt.Println("temperature=1.2 -> брейншторм и вариативность: идеи, сторителлинг, поиск необычных формулировок.")
+
+	return nil
+}
+
+func callOpenRouter(apiKey, model string, messages []message, maxTokens int, temperature *float64, stop []string, title string) (string, error) {
 	reqPayload := chatRequest{
 		Model:    model,
 		Messages: messages,
 	}
 	if maxTokens > 0 {
 		reqPayload.MaxTokens = maxTokens
+	}
+	if temperature != nil {
+		reqPayload.Temperature = temperature
 	}
 	if len(stop) > 0 {
 		reqPayload.Stop = stop
@@ -297,7 +389,7 @@ func callOpenRouter(apiKey, model string, messages []message, maxTokens int, sto
 }
 
 func containsExactAnswer(answer, expected string) bool {
-	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(expected) + `\b`)
+	re := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(expected) + `\b`)
 	return re.MatchString(answer)
 }
 
@@ -318,6 +410,153 @@ func scoreAccuracy(answer, expected string) int {
 	return score
 }
 
+func exactAccuracyScore(answer, expected string) int {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	answerLower := strings.ToLower(answer)
+	if expected == "" {
+		return 0
+	}
+
+	score := 20
+
+	if strings.Contains(answerLower, expected) {
+		score = 100
+	} else {
+		candidate := expected
+		if idx := strings.Index(expected, "="); idx != -1 && idx+1 < len(expected) {
+			candidate = strings.TrimSpace(expected[idx+1:])
+		}
+		if candidate != "" && containsExactAnswer(answerLower, candidate) {
+			score = 70
+		}
+	}
+
+	if strings.Contains(answerLower, "result=60") && strings.Contains(expected, "30") {
+		score -= 50
+	}
+	if strings.Contains(answerLower, "не "+expected) || strings.Contains(answerLower, "not "+expected) {
+		score -= 40
+	}
+
+	if score > 100 {
+		return 100
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+var wordTokenRE = regexp.MustCompile(`[\pL\pN]+`)
+
+func creativityScore(answer string) int {
+	tokens := wordTokenRE.FindAllString(strings.ToLower(answer), -1)
+	if len(tokens) == 0 {
+		return 0
+	}
+
+	unique := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		unique[t] = struct{}{}
+	}
+
+	richness := float64(len(unique)) / float64(len(tokens))
+	score := int(richness * 70)
+
+	if len(tokens) > 80 {
+		score += 10
+	} else if len(tokens) > 40 {
+		score += 5
+	}
+
+	if strings.ContainsAny(answer, "!?") {
+		score += 5
+	}
+	if strings.Contains(strings.ToLower(answer), "как") || strings.Contains(strings.ToLower(answer), "словно") || strings.Contains(strings.ToLower(answer), "будто") {
+		score += 10
+	}
+
+	if score > 100 {
+		return 100
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func diversityScore(index int, all []temperatureResult) int {
+	if len(all) <= 1 {
+		return 0
+	}
+
+	sum := 0.0
+	for i, other := range all {
+		if i == index {
+			continue
+		}
+		sum += jaccardDistance(all[index].Answer, other.Answer)
+	}
+
+	avg := sum / float64(len(all)-1)
+	score := int(avg * 100)
+	if score > 100 {
+		return 100
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func jaccardDistance(a, b string) float64 {
+	setA := tokenSet(a)
+	setB := tokenSet(b)
+
+	if len(setA) == 0 && len(setB) == 0 {
+		return 0
+	}
+
+	intersection := 0
+	for token := range setA {
+		if _, ok := setB[token]; ok {
+			intersection++
+		}
+	}
+
+	union := len(setA) + len(setB) - intersection
+	if union == 0 {
+		return 0
+	}
+
+	return 1 - (float64(intersection) / float64(union))
+}
+
+func tokenSet(text string) map[string]struct{} {
+	tokens := wordTokenRE.FindAllString(strings.ToLower(text), -1)
+	set := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		set[token] = struct{}{}
+	}
+	return set
+}
+
+func pickBestTemperature(results []temperatureResult, selector func(temperatureResult) int) float64 {
+	if len(results) == 0 {
+		return 0
+	}
+	best := results[0]
+	bestScore := selector(best)
+	for _, item := range results[1:] {
+		s := selector(item)
+		if s > bestScore {
+			best = item
+			bestScore = s
+		}
+	}
+	return best.Temperature
+}
+
 func getDefaultModel() string {
 	model := strings.TrimSpace(os.Getenv("OPENROUTER_MODEL"))
 	if model == "" {
@@ -335,7 +574,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli day3 [flags]\n\nUse `openrouter-cli --help` for chat flags or `openrouter-cli day3 --help` for Day 3 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli day3 --help` for Day 3 flags, and `openrouter-cli day4 --help` for Day 4 flags."
 }
 
 func printRootUsage() {
@@ -353,6 +592,7 @@ func printChatUsage() {
 	fmt.Println("  -help               Show help")
 	fmt.Println("Subcommands:")
 	fmt.Println("  day3                Run four reasoning strategies and compare results")
+	fmt.Println("  day4                Run same prompt with different temperatures and compare")
 }
 
 func printDay3Usage() {
@@ -361,6 +601,16 @@ func printDay3Usage() {
 	fmt.Println("  -model string       OpenRouter model")
 	fmt.Println(`  -task string        Task to solve (default: "Сколько различных перестановок у слова \"LEVEL\"?...")`)
 	fmt.Println(`  -expected string    Expected exact value used for scoring (default: "30")`)
+	fmt.Println("  -help               Show help")
+}
+
+func printDay4Usage() {
+	fmt.Println("Usage: openrouter-cli day4 [flags]")
+	fmt.Println("Flags:")
+	fmt.Println("  -model string       OpenRouter model")
+	fmt.Println(`  -prompt string      Prompt to run at temperatures 0, 0.7, 1.2`)
+	fmt.Println(`  -expected string    Expected exact value used for accuracy scoring`)
+	fmt.Println("  -max-tokens int     Maximum response tokens for each run")
 	fmt.Println("  -help               Show help")
 }
 
