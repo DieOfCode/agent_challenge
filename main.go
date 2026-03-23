@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,14 +31,22 @@ type message struct {
 }
 
 type chatResponse struct {
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage usageStats `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+type usageStats struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
 }
 
 type methodResult struct {
@@ -52,6 +61,42 @@ type temperatureResult struct {
 	Accuracy    int
 	Creativity  int
 	Diversity   int
+}
+
+type openRouterResult struct {
+	Answer  string
+	Model   string
+	Usage   usageStats
+	Latency time.Duration
+}
+
+type benchmarkResult struct {
+	Tier           string
+	ModelID        string
+	ModelURL       string
+	HuggingFaceURL string
+	Answer         string
+	Latency        time.Duration
+	Usage          usageStats
+	CostUSD        float64
+	CostKnown      bool
+	QualityScore   int
+}
+
+type modelInfo struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	CanonicalSlug string `json:"canonical_slug"`
+	HuggingFaceID string `json:"hugging_face_id"`
+	Pricing       struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
+		Request    string `json:"request"`
+	} `json:"pricing"`
+}
+
+type modelsResponse struct {
+	Data []modelInfo `json:"data"`
 }
 
 func main() {
@@ -69,6 +114,11 @@ func main() {
 		case "day4":
 			if err := runDay4Command(os.Args[2:]); err != nil {
 				exitf("day4 failed: %v", err)
+			}
+			return
+		case "day5":
+			if err := runDay5Command(os.Args[2:]); err != nil {
+				exitf("day5 failed: %v", err)
 			}
 			return
 		case "help":
@@ -328,7 +378,146 @@ func runDay4Command(args []string) error {
 	return nil
 }
 
+func runDay5Command(args []string) error {
+	fs := flag.NewFlagSet("openrouter-cli day5", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	modelWeak := fs.String("weak-model", "openai/gpt-4o-mini", "Weak model ID")
+	modelMid := fs.String("mid-model", "openai/gpt-4.1-mini", "Mid model ID")
+	modelStrong := fs.String("strong-model", "openai/gpt-4.1", "Strong model ID")
+	prompt := fs.String("prompt", "Сравни HTTP/1.1, HTTP/2 и HTTP/3 для мобильного API. Формат: 3 буллета отличий и 1 практическая рекомендация. Обязательно упомяни: multiplexing, head-of-line blocking, QUIC.", "Prompt for all models")
+	keywords := fs.String("quality-keywords", "multiplexing,head-of-line,quic,рекомендац", "Comma-separated quality markers")
+	maxTokens := fs.Int("max-tokens", 350, "Maximum response tokens")
+	temperature := fs.Float64("temperature", 0.2, "Temperature for all compared models")
+	includeCost := fs.Bool("include-cost", true, "Calculate cost if pricing metadata is available")
+	reportPath := fs.String("report", "DAY5_RESULTS.md", "Markdown report output path")
+	help := fs.Bool("help", false, "Show help")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse day5 flags: %w", err)
+	}
+	if *help {
+		printDay5Usage()
+		return nil
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected day5 arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	apiKey := getAPIKey()
+	metadata, metaErr := fetchModelMetadata(apiKey)
+	if metaErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch model metadata: %v\n", metaErr)
+	}
+
+	t := *temperature
+	models := []struct {
+		tier    string
+		modelID string
+	}{
+		{tier: "weak", modelID: strings.TrimSpace(*modelWeak)},
+		{tier: "mid", modelID: strings.TrimSpace(*modelMid)},
+		{tier: "strong", modelID: strings.TrimSpace(*modelStrong)},
+	}
+
+	qualityKeywords := parseCSVList(*keywords)
+	results := make([]benchmarkResult, 0, len(models))
+
+	for _, item := range models {
+		if item.modelID == "" {
+			return fmt.Errorf("%s model is empty", item.tier)
+		}
+
+		resp, err := callOpenRouterDetailed(apiKey, item.modelID, []message{
+			{Role: "user", Content: *prompt},
+		}, *maxTokens, &t, nil, "models-day5-cli")
+		if err != nil {
+			return fmt.Errorf("%s model (%s) failed: %w", item.tier, item.modelID, err)
+		}
+
+		modelID := item.modelID
+		if strings.TrimSpace(resp.Model) != "" {
+			modelID = strings.TrimSpace(resp.Model)
+		}
+
+		modelMeta, hasMeta := metadata[modelID]
+		if !hasMeta {
+			modelMeta, hasMeta = metadata[item.modelID]
+		}
+
+		result := benchmarkResult{
+			Tier:         item.tier,
+			ModelID:      modelID,
+			ModelURL:     "https://openrouter.ai/" + modelID,
+			Answer:       strings.TrimSpace(resp.Answer),
+			Latency:      resp.Latency,
+			Usage:        resp.Usage,
+			QualityScore: qualityScore(resp.Answer, qualityKeywords),
+		}
+
+		if hasMeta {
+			if modelMeta.ID != "" {
+				result.ModelURL = "https://openrouter.ai/" + modelMeta.ID
+			}
+			if modelMeta.HuggingFaceID != "" {
+				result.HuggingFaceURL = "https://huggingface.co/" + modelMeta.HuggingFaceID
+			}
+			if *includeCost {
+				cost, known := estimateCostUSD(resp.Usage, modelMeta)
+				result.CostUSD = cost
+				result.CostKnown = known
+			}
+		}
+
+		results = append(results, result)
+	}
+
+	fastest := pickFastestModel(results)
+	bestQuality := pickBestQualityModel(results)
+	efficient := pickMostEfficientModel(results)
+
+	fmt.Println("=== День 5: Версии моделей ===")
+	fmt.Printf("Промпт: %s\n\n", *prompt)
+	for _, r := range results {
+		fmt.Printf("--- %s model: %s ---\n", strings.ToUpper(r.Tier), r.ModelID)
+		fmt.Printf("Latency: %s\n", r.Latency.Round(time.Millisecond))
+		fmt.Printf("Tokens: prompt=%d, completion=%d, total=%d\n", r.Usage.PromptTokens, r.Usage.CompletionTokens, r.Usage.TotalTokens)
+		if r.CostKnown {
+			fmt.Printf("Cost: $%.6f\n", r.CostUSD)
+		} else {
+			fmt.Println("Cost: N/A")
+		}
+		fmt.Printf("Quality score: %d/100\n", r.QualityScore)
+		fmt.Printf("OpenRouter: %s\n", r.ModelURL)
+		if r.HuggingFaceURL != "" {
+			fmt.Printf("HuggingFace: %s\n", r.HuggingFaceURL)
+		}
+		fmt.Printf("Answer:\n%s\n\n", r.Answer)
+	}
+
+	fmt.Println("=== Сравнение ===")
+	fmt.Printf("Качество: лучший -> %s (%s)\n", strings.ToUpper(bestQuality.Tier), bestQuality.ModelID)
+	fmt.Printf("Скорость: лучший -> %s (%s)\n", strings.ToUpper(fastest.Tier), fastest.ModelID)
+	fmt.Printf("Ресурсоёмкость: лучший -> %s (%s)\n", strings.ToUpper(efficient.Tier), efficient.ModelID)
+	fmt.Printf("Короткий вывод: слабая модель обычно дешевле и быстрее, сильная — качественнее, средняя — компромисс по качеству/цене.\n")
+
+	if err := writeDay5Report(*reportPath, *prompt, results, fastest, bestQuality, efficient); err != nil {
+		return fmt.Errorf("failed to write report: %w", err)
+	}
+	fmt.Printf("Отчёт: %s\n", *reportPath)
+
+	return nil
+}
+
 func callOpenRouter(apiKey, model string, messages []message, maxTokens int, temperature *float64, stop []string, title string) (string, error) {
+	result, err := callOpenRouterDetailed(apiKey, model, messages, maxTokens, temperature, stop, title)
+	if err != nil {
+		return "", err
+	}
+	return result.Answer, nil
+}
+
+func callOpenRouterDetailed(apiKey, model string, messages []message, maxTokens int, temperature *float64, stop []string, title string) (openRouterResult, error) {
 	reqPayload := chatRequest{
 		Model:    model,
 		Messages: messages,
@@ -345,12 +534,12 @@ func callOpenRouter(apiKey, model string, messages []message, maxTokens int, tem
 
 	reqBody, err := json.Marshal(reqPayload)
 	if err != nil {
-		return "", fmt.Errorf("failed to encode request: %w", err)
+		return openRouterResult{}, fmt.Errorf("failed to encode request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, openRouterURL, bytes.NewReader(reqBody))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return openRouterResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -358,34 +547,46 @@ func callOpenRouter(apiKey, model string, messages []message, maxTokens int, tem
 	req.Header.Set("X-Title", title)
 
 	client := &http.Client{Timeout: 60 * time.Second}
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return openRouterResult{}, fmt.Errorf("request failed: %w", err)
 	}
+	latency := time.Since(start)
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+		return openRouterResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var out chatResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("invalid JSON response: %w\nraw: %s", err, string(raw))
+		return openRouterResult{}, fmt.Errorf("invalid JSON response: %w\nraw: %s", err, string(raw))
 	}
 
 	if resp.StatusCode >= 400 {
 		if out.Error != nil && out.Error.Message != "" {
-			return "", fmt.Errorf("API error (%s): %s", resp.Status, out.Error.Message)
+			return openRouterResult{}, fmt.Errorf("API error (%s): %s", resp.Status, out.Error.Message)
 		}
-		return "", fmt.Errorf("API error (%s): %s", resp.Status, string(raw))
+		return openRouterResult{}, fmt.Errorf("API error (%s): %s", resp.Status, string(raw))
 	}
 
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return openRouterResult{}, fmt.Errorf("no choices in response")
 	}
 
-	return strings.TrimSpace(out.Choices[0].Message.Content), nil
+	usage := out.Usage
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+
+	return openRouterResult{
+		Answer:  strings.TrimSpace(out.Choices[0].Message.Content),
+		Model:   strings.TrimSpace(out.Model),
+		Usage:   usage,
+		Latency: latency,
+	}, nil
 }
 
 func containsExactAnswer(answer, expected string) bool {
@@ -557,6 +758,220 @@ func pickBestTemperature(results []temperatureResult, selector func(temperatureR
 	return best.Temperature
 }
 
+func parseCSVList(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		v := strings.TrimSpace(strings.ToLower(part))
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func qualityScore(answer string, keywords []string) int {
+	if strings.TrimSpace(answer) == "" {
+		return 0
+	}
+
+	lower := strings.ToLower(answer)
+	score := 0
+
+	if len(keywords) > 0 {
+		perKeyword := 60 / len(keywords)
+		remainder := 60 - (perKeyword * len(keywords))
+		matched := 0
+		for _, kw := range keywords {
+			if strings.Contains(lower, kw) {
+				matched++
+				score += perKeyword
+			}
+		}
+		if matched == len(keywords) {
+			score += remainder
+		}
+	}
+
+	bulletCount := strings.Count(answer, "\n-") + strings.Count(answer, "\n*")
+	if bulletCount >= 3 {
+		score += 20
+	} else if bulletCount == 2 {
+		score += 12
+	} else if bulletCount == 1 {
+		score += 6
+	}
+
+	if strings.Contains(lower, "рекомендац") || strings.Contains(lower, "recommend") {
+		score += 20
+	}
+
+	if score > 100 {
+		return 100
+	}
+	if score < 0 {
+		return 0
+	}
+	return score
+}
+
+func fetchModelMetadata(apiKey string) (map[string]modelInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, "https://openrouter.ai/api/v1/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create models request: %w", err)
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("models request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed reading models response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("models API error (%s): %s", resp.Status, string(raw))
+	}
+
+	var parsed modelsResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse models response: %w", err)
+	}
+
+	out := make(map[string]modelInfo, len(parsed.Data))
+	for _, item := range parsed.Data {
+		if strings.TrimSpace(item.ID) != "" {
+			out[item.ID] = item
+		}
+	}
+	return out, nil
+}
+
+func estimateCostUSD(usage usageStats, meta modelInfo) (float64, bool) {
+	promptPrice, hasPrompt := parseFloat(meta.Pricing.Prompt)
+	completionPrice, hasCompletion := parseFloat(meta.Pricing.Completion)
+	requestPrice, hasRequest := parseFloat(meta.Pricing.Request)
+
+	if !hasPrompt && !hasCompletion && !hasRequest {
+		return 0, false
+	}
+
+	total := 0.0
+	if hasPrompt {
+		total += float64(usage.PromptTokens) * promptPrice
+	}
+	if hasCompletion {
+		total += float64(usage.CompletionTokens) * completionPrice
+	}
+	if hasRequest {
+		total += requestPrice
+	}
+	return total, true
+}
+
+func parseFloat(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func pickFastestModel(results []benchmarkResult) benchmarkResult {
+	best := results[0]
+	for _, r := range results[1:] {
+		if r.Latency < best.Latency {
+			best = r
+		}
+	}
+	return best
+}
+
+func pickBestQualityModel(results []benchmarkResult) benchmarkResult {
+	best := results[0]
+	for _, r := range results[1:] {
+		if r.QualityScore > best.QualityScore {
+			best = r
+		}
+	}
+	return best
+}
+
+func pickMostEfficientModel(results []benchmarkResult) benchmarkResult {
+	anyCost := false
+	for _, r := range results {
+		if r.CostKnown {
+			anyCost = true
+			break
+		}
+	}
+
+	best := results[0]
+	for _, r := range results[1:] {
+		if anyCost && r.CostKnown && best.CostKnown {
+			if r.CostUSD < best.CostUSD {
+				best = r
+			}
+			continue
+		}
+		if anyCost && r.CostKnown && !best.CostKnown {
+			best = r
+			continue
+		}
+		if r.Usage.TotalTokens < best.Usage.TotalTokens {
+			best = r
+		}
+	}
+	return best
+}
+
+func writeDay5Report(path, prompt string, results []benchmarkResult, fastest, bestQuality, efficient benchmarkResult) error {
+	var b strings.Builder
+	b.WriteString("# Day 5 Results: Model Versions\n\n")
+	b.WriteString("## Prompt\n")
+	b.WriteString(prompt + "\n\n")
+	b.WriteString("## Models\n\n")
+
+	for _, r := range results {
+		b.WriteString("### " + strings.ToUpper(r.Tier) + " model: `" + r.ModelID + "`\n")
+		b.WriteString("- Latency: `" + r.Latency.Round(time.Millisecond).String() + "`\n")
+		b.WriteString(fmt.Sprintf("- Tokens: `prompt=%d completion=%d total=%d`\n", r.Usage.PromptTokens, r.Usage.CompletionTokens, r.Usage.TotalTokens))
+		if r.CostKnown {
+			b.WriteString(fmt.Sprintf("- Cost: `$%.6f`\n", r.CostUSD))
+		} else {
+			b.WriteString("- Cost: `N/A`\n")
+		}
+		b.WriteString(fmt.Sprintf("- Quality score: `%d/100`\n", r.QualityScore))
+		b.WriteString("- OpenRouter: " + r.ModelURL + "\n")
+		if r.HuggingFaceURL != "" {
+			b.WriteString("- HuggingFace: " + r.HuggingFaceURL + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString("Answer:\n")
+		b.WriteString("```text\n" + strings.TrimSpace(r.Answer) + "\n```\n\n")
+	}
+
+	b.WriteString("## Comparison\n")
+	b.WriteString(fmt.Sprintf("- Quality winner: `%s (%s)`\n", strings.ToUpper(bestQuality.Tier), bestQuality.ModelID))
+	b.WriteString(fmt.Sprintf("- Speed winner: `%s (%s)`\n", strings.ToUpper(fastest.Tier), fastest.ModelID))
+	b.WriteString(fmt.Sprintf("- Efficiency winner: `%s (%s)`\n", strings.ToUpper(efficient.Tier), efficient.ModelID))
+	b.WriteString("\n")
+	b.WriteString("Short conclusion: weak models are often cheaper/faster, strong models tend to give better quality, and mid-tier models are a practical balance.\n")
+
+	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
 func getDefaultModel() string {
 	model := strings.TrimSpace(os.Getenv("OPENROUTER_MODEL"))
 	if model == "" {
@@ -574,7 +989,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli day3 --help` for Day 3 flags, and `openrouter-cli day4 --help` for Day 4 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, and `openrouter-cli day5 --help` for Day 5 flags."
 }
 
 func printRootUsage() {
@@ -593,6 +1008,7 @@ func printChatUsage() {
 	fmt.Println("Subcommands:")
 	fmt.Println("  day3                Run four reasoning strategies and compare results")
 	fmt.Println("  day4                Run same prompt with different temperatures and compare")
+	fmt.Println("  day5                Compare weak/mid/strong models by quality, speed, and cost")
 }
 
 func printDay3Usage() {
@@ -612,6 +1028,21 @@ func printDay4Usage() {
 	fmt.Println(`  -expected string    Expected exact value used for accuracy scoring`)
 	fmt.Println("  -max-tokens int     Maximum response tokens for each run")
 	fmt.Println("  -help               Show help")
+}
+
+func printDay5Usage() {
+	fmt.Println("Usage: openrouter-cli day5 [flags]")
+	fmt.Println("Flags:")
+	fmt.Println("  -weak-model string      Weak model ID")
+	fmt.Println("  -mid-model string       Mid model ID")
+	fmt.Println("  -strong-model string    Strong model ID")
+	fmt.Println("  -prompt string          Prompt for all compared models")
+	fmt.Println("  -quality-keywords string  Comma-separated quality markers")
+	fmt.Println("  -temperature float      Temperature for all compared models")
+	fmt.Println("  -max-tokens int         Maximum response tokens")
+	fmt.Println("  -include-cost bool      Calculate cost if pricing metadata is available")
+	fmt.Println("  -report string          Markdown report output path")
+	fmt.Println("  -help                   Show help")
 }
 
 func exitf(format string, args ...any) {
