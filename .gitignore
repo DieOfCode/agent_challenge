@@ -1,3 +1,4 @@
 .env
 openrouter-cli
 /day3
+.agent_history.json

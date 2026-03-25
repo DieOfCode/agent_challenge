@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Agent is a separate entity that owns request/response interaction with the LLM.
@@ -21,6 +24,7 @@ type LLMAgentConfig struct {
 	Temperature  *float64
 	SystemPrompt string
 	Title        string
+	HistoryStore HistoryStore
 }
 
 type LLMAgent struct {
@@ -30,11 +34,126 @@ type LLMAgent struct {
 	temperature *float64
 	title       string
 	history     []message
+	store       HistoryStore
 }
 
-func NewLLMAgent(cfg LLMAgentConfig) *LLMAgent {
+type HistoryStore interface {
+	Load() ([]message, error)
+	Save([]message) error
+	Reset() error
+}
+
+type JSONHistoryStore struct {
+	path string
+}
+
+type conversationSnapshot struct {
+	Version  int             `json:"version"`
+	Messages []storedMessage `json:"messages"`
+}
+
+type storedMessage struct {
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+func NewJSONHistoryStore(path string) *JSONHistoryStore {
+	return &JSONHistoryStore{path: path}
+}
+
+func (s *JSONHistoryStore) Load() ([]message, error) {
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var snapshot conversationSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, fmt.Errorf("failed to parse history JSON: %w", err)
+	}
+
+	history := make([]message, 0, len(snapshot.Messages))
+	for _, m := range snapshot.Messages {
+		role := strings.TrimSpace(m.Role)
+		content := strings.TrimSpace(m.Content)
+		if role == "" || content == "" {
+			continue
+		}
+		history = append(history, message{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return history, nil
+}
+
+func (s *JSONHistoryStore) Save(history []message) error {
+	snapshot := conversationSnapshot{
+		Version:  1,
+		Messages: make([]storedMessage, 0, len(history)),
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, m := range history {
+		role := strings.TrimSpace(m.Role)
+		content := strings.TrimSpace(m.Content)
+		if role == "" || content == "" {
+			continue
+		}
+		snapshot.Messages = append(snapshot.Messages, storedMessage{
+			Role:      role,
+			Content:   content,
+			Timestamp: now,
+		})
+	}
+
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode history JSON: %w", err)
+	}
+
+	dir := filepath.Dir(s.path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create history dir: %w", err)
+		}
+	}
+
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write history temp file: %w", err)
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return fmt.Errorf("failed to replace history file: %w", err)
+	}
+	return nil
+}
+
+func (s *JSONHistoryStore) Reset() error {
+	err := os.Remove(s.path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func NewLLMAgent(cfg LLMAgentConfig) (*LLMAgent, error) {
 	history := make([]message, 0, 16)
-	if strings.TrimSpace(cfg.SystemPrompt) != "" {
+
+	if cfg.HistoryStore != nil {
+		loadedHistory, err := cfg.HistoryStore.Load()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load history: %w", err)
+		}
+		if len(loadedHistory) > 0 {
+			history = append(history, loadedHistory...)
+		}
+	}
+
+	if len(history) == 0 && strings.TrimSpace(cfg.SystemPrompt) != "" {
 		history = append(history, message{
 			Role:    "system",
 			Content: strings.TrimSpace(cfg.SystemPrompt),
@@ -48,7 +167,8 @@ func NewLLMAgent(cfg LLMAgentConfig) *LLMAgent {
 		temperature: cfg.Temperature,
 		title:       cfg.Title,
 		history:     history,
-	}
+		store:       cfg.HistoryStore,
+	}, nil
 }
 
 func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
@@ -82,6 +202,12 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 		message{Role: "assistant", Content: strings.TrimSpace(result.Answer)},
 	)
 
+	if a.store != nil {
+		if err := a.store.Save(a.history); err != nil {
+			return openRouterResult{}, fmt.Errorf("failed to save conversation history: %w", err)
+		}
+	}
+
 	return result, nil
 }
 
@@ -94,6 +220,9 @@ func runAgentCommand(args []string) error {
 	systemPrompt := fs.String("system", "You are a helpful assistant.", "System prompt for the agent")
 	maxTokens := fs.Int("max-tokens", 400, "Maximum response tokens")
 	temperature := fs.Float64("temperature", 0.2, "Agent temperature")
+	historyFile := fs.String("history-file", ".agent_history.json", "Path to JSON file for saved dialogue context")
+	noHistory := fs.Bool("no-history", false, "Disable context persistence")
+	resetHistory := fs.Bool("reset-history", false, "Delete saved history before start")
 	interactive := fs.Bool("interactive", false, "Interactive chat mode")
 	help := fs.Bool("help", false, "Show help")
 
@@ -107,16 +236,34 @@ func runAgentCommand(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected agent arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	if *noHistory && *resetHistory {
+		return fmt.Errorf("cannot use -no-history and -reset-history together")
+	}
+
+	var historyStore HistoryStore
+	if !*noHistory {
+		store := NewJSONHistoryStore(strings.TrimSpace(*historyFile))
+		if *resetHistory {
+			if err := store.Reset(); err != nil {
+				return fmt.Errorf("failed to reset history: %w", err)
+			}
+		}
+		historyStore = store
+	}
 
 	t := *temperature
-	agent := NewLLMAgent(LLMAgentConfig{
+	agent, err := NewLLMAgent(LLMAgentConfig{
 		APIKey:       getAPIKey(),
 		Model:        *model,
 		MaxTokens:    *maxTokens,
 		Temperature:  &t,
 		SystemPrompt: *systemPrompt,
 		Title:        "encapsulated-agent-cli",
+		HistoryStore: historyStore,
 	})
+	if err != nil {
+		return err
+	}
 
 	if *interactive {
 		return runAgentInteractive(agent)
@@ -183,6 +330,9 @@ func printAgentUsage() {
 	fmt.Println("  -system string       System prompt for the agent")
 	fmt.Println("  -temperature float   Temperature")
 	fmt.Println("  -max-tokens int      Maximum response tokens")
+	fmt.Println("  -history-file string JSON file for saved context")
+	fmt.Println("  -no-history          Disable context persistence")
+	fmt.Println("  -reset-history       Clear saved context before start")
 	fmt.Println("  -interactive         Interactive chat mode")
 	fmt.Println("  -help                Show help")
 }
