@@ -68,6 +68,21 @@ type openRouterResult struct {
 	Model   string
 	Usage   usageStats
 	Latency time.Duration
+	Tokens  tokenStats
+}
+
+type tokenStats struct {
+	EstimatedHistoryTokens   int
+	EstimatedRequestTokens   int
+	EstimatedResponseTokens  int
+	PromptTokens             int
+	ResponseTokens           int
+	TotalTokens              int
+	ConversationTokens       int
+	CumulativePromptTokens   int
+	CumulativeResponseTokens int
+	CumulativeTotalTokens    int
+	ContextLimit             int
 }
 
 type benchmarkResult struct {
@@ -119,6 +134,11 @@ func main() {
 		case "day5":
 			if err := runDay5Command(os.Args[2:]); err != nil {
 				exitf("day5 failed: %v", err)
+			}
+			return
+		case "day8":
+			if err := runDay8Command(os.Args[2:]); err != nil {
+				exitf("day8 failed: %v", err)
 			}
 			return
 		case "agent":
@@ -994,7 +1014,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, and `openrouter-cli day5 --help` for Day 5 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, and `openrouter-cli day8 --help` for Day 8 flags."
 }
 
 func printRootUsage() {
@@ -1015,6 +1035,7 @@ func printChatUsage() {
 	fmt.Println("  day3                Run four reasoning strategies and compare results")
 	fmt.Println("  day4                Run same prompt with different temperatures and compare")
 	fmt.Println("  day5                Compare weak/mid/strong models by quality, speed, and cost")
+	fmt.Println("  day8                Show token growth on short/long/overflow dialogues")
 }
 
 func printDay3Usage() {

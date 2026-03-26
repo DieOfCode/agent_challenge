@@ -25,16 +25,20 @@ type LLMAgentConfig struct {
 	SystemPrompt string
 	Title        string
 	HistoryStore HistoryStore
+	ContextLimit int
 }
 
 type LLMAgent struct {
-	apiKey      string
-	model       string
-	maxTokens   int
-	temperature *float64
-	title       string
-	history     []message
-	store       HistoryStore
+	apiKey                   string
+	model                    string
+	maxTokens                int
+	temperature              *float64
+	title                    string
+	history                  []message
+	store                    HistoryStore
+	contextLimit             int
+	cumulativePromptTokens   int
+	cumulativeResponseTokens int
 }
 
 type HistoryStore interface {
@@ -161,20 +165,47 @@ func NewLLMAgent(cfg LLMAgentConfig) (*LLMAgent, error) {
 	}
 
 	return &LLMAgent{
-		apiKey:      cfg.APIKey,
-		model:       cfg.Model,
-		maxTokens:   cfg.MaxTokens,
-		temperature: cfg.Temperature,
-		title:       cfg.Title,
-		history:     history,
-		store:       cfg.HistoryStore,
+		apiKey:       cfg.APIKey,
+		model:        cfg.Model,
+		maxTokens:    cfg.MaxTokens,
+		temperature:  cfg.Temperature,
+		title:        cfg.Title,
+		history:      history,
+		store:        cfg.HistoryStore,
+		contextLimit: cfg.ContextLimit,
 	}, nil
+}
+
+type ContextLimitError struct {
+	EstimatedPromptTokens int
+	MaxTokens             int
+	ContextLimit          int
+}
+
+func (e *ContextLimitError) Error() string {
+	return fmt.Sprintf(
+		"context limit exceeded: estimated_prompt_tokens=%d max_tokens=%d context_limit=%d",
+		e.EstimatedPromptTokens,
+		e.MaxTokens,
+		e.ContextLimit,
+	)
 }
 
 func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 	userInput = strings.TrimSpace(userInput)
 	if userInput == "" {
 		return openRouterResult{}, fmt.Errorf("empty user input")
+	}
+
+	historyEstimate := estimateMessagesTokens(a.history)
+	userEstimate := estimateMessageTokens(message{Role: "user", Content: userInput})
+	requestEstimate := historyEstimate + userEstimate
+	if a.contextLimit > 0 && requestEstimate+a.maxTokens > a.contextLimit {
+		return openRouterResult{}, &ContextLimitError{
+			EstimatedPromptTokens: requestEstimate,
+			MaxTokens:             a.maxTokens,
+			ContextLimit:          a.contextLimit,
+		}
 	}
 
 	requestMessages := append([]message(nil), a.history...)
@@ -208,6 +239,36 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 		}
 	}
 
+	promptTokens := result.Usage.PromptTokens
+	responseTokens := result.Usage.CompletionTokens
+	totalTokens := result.Usage.TotalTokens
+	if promptTokens == 0 {
+		promptTokens = requestEstimate
+	}
+	if responseTokens == 0 {
+		responseTokens = estimateTextTokens(result.Answer)
+	}
+	if totalTokens == 0 {
+		totalTokens = promptTokens + responseTokens
+	}
+
+	a.cumulativePromptTokens += promptTokens
+	a.cumulativeResponseTokens += responseTokens
+
+	result.Tokens = tokenStats{
+		EstimatedHistoryTokens:   historyEstimate,
+		EstimatedRequestTokens:   requestEstimate,
+		EstimatedResponseTokens:  estimateTextTokens(result.Answer),
+		PromptTokens:             promptTokens,
+		ResponseTokens:           responseTokens,
+		TotalTokens:              totalTokens,
+		ConversationTokens:       estimateMessagesTokens(a.history),
+		CumulativePromptTokens:   a.cumulativePromptTokens,
+		CumulativeResponseTokens: a.cumulativeResponseTokens,
+		CumulativeTotalTokens:    a.cumulativePromptTokens + a.cumulativeResponseTokens,
+		ContextLimit:             a.contextLimit,
+	}
+
 	return result, nil
 }
 
@@ -220,6 +281,8 @@ func runAgentCommand(args []string) error {
 	systemPrompt := fs.String("system", "You are a helpful assistant.", "System prompt for the agent")
 	maxTokens := fs.Int("max-tokens", 400, "Maximum response tokens")
 	temperature := fs.Float64("temperature", 0.2, "Agent temperature")
+	contextLimit := fs.Int("context-limit", 0, "Optional context limit in tokens (0 disables local pre-check)")
+	showTokens := fs.Bool("show-tokens", false, "Print token stats after each response")
 	historyFile := fs.String("history-file", ".agent_history.json", "Path to JSON file for saved dialogue context")
 	noHistory := fs.Bool("no-history", false, "Disable context persistence")
 	resetHistory := fs.Bool("reset-history", false, "Delete saved history before start")
@@ -260,13 +323,14 @@ func runAgentCommand(args []string) error {
 		SystemPrompt: *systemPrompt,
 		Title:        "encapsulated-agent-cli",
 		HistoryStore: historyStore,
+		ContextLimit: *contextLimit,
 	})
 	if err != nil {
 		return err
 	}
 
 	if *interactive {
-		return runAgentInteractive(agent)
+		return runAgentInteractive(agent, *showTokens)
 	}
 
 	userPrompt := strings.TrimSpace(*prompt)
@@ -286,10 +350,13 @@ func runAgentCommand(args []string) error {
 		return err
 	}
 	fmt.Println(strings.TrimSpace(result.Answer))
+	if *showTokens {
+		printTokenStats(result.Tokens)
+	}
 	return nil
 }
 
-func runAgentInteractive(agent Agent) error {
+func runAgentInteractive(agent Agent, showTokens bool) error {
 	fmt.Println("Agent interactive mode. Type /exit to quit.")
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -319,7 +386,24 @@ func runAgentInteractive(agent Agent) error {
 		}
 
 		fmt.Printf("agent> %s\n\n", strings.TrimSpace(result.Answer))
+		if showTokens {
+			printTokenStats(result.Tokens)
+		}
 	}
+}
+
+func printTokenStats(stats tokenStats) {
+	fmt.Printf(
+		"tokens> history_est=%d request_est=%d prompt=%d response=%d total=%d conversation_est=%d cumulative_total=%d context_limit=%d\n",
+		stats.EstimatedHistoryTokens,
+		stats.EstimatedRequestTokens,
+		stats.PromptTokens,
+		stats.ResponseTokens,
+		stats.TotalTokens,
+		stats.ConversationTokens,
+		stats.CumulativeTotalTokens,
+		stats.ContextLimit,
+	)
 }
 
 func printAgentUsage() {
@@ -330,9 +414,32 @@ func printAgentUsage() {
 	fmt.Println("  -system string       System prompt for the agent")
 	fmt.Println("  -temperature float   Temperature")
 	fmt.Println("  -max-tokens int      Maximum response tokens")
+	fmt.Println("  -context-limit int   Optional context limit in tokens")
+	fmt.Println("  -show-tokens         Print token stats for each response")
 	fmt.Println("  -history-file string JSON file for saved context")
 	fmt.Println("  -no-history          Disable context persistence")
 	fmt.Println("  -reset-history       Clear saved context before start")
 	fmt.Println("  -interactive         Interactive chat mode")
 	fmt.Println("  -help                Show help")
+}
+
+func estimateTextTokens(text string) int {
+	runes := len([]rune(strings.TrimSpace(text)))
+	if runes == 0 {
+		return 0
+	}
+	// Rough heuristic: ~4 chars per token + small message overhead.
+	return (runes+3)/4 + 1
+}
+
+func estimateMessageTokens(m message) int {
+	return 4 + estimateTextTokens(m.Content)
+}
+
+func estimateMessagesTokens(messages []message) int {
+	total := 2
+	for _, msg := range messages {
+		total += estimateMessageTokens(msg)
+	}
+	return total
 }
