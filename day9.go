@@ -47,6 +47,7 @@ func runDay9Command(args []string) error {
 	summaryEvery := fs.Int("summary-every", 10, "How many older messages are compressed into one summary block")
 	historyDir := fs.String("history-dir", "/tmp/day9-agent-context", "Directory for run history files")
 	reportPath := fs.String("report", "DAY9_RESULTS.md", "Markdown report path")
+	progress := fs.Bool("progress", true, "Show live progress for each turn")
 	help := fs.Bool("help", false, "Show help")
 
 	if err := fs.Parse(args); err != nil {
@@ -81,6 +82,7 @@ func runDay9Command(args []string) error {
 		History:   filepath.Join(*historyDir, "baseline.json"),
 		Prompts:   prompts,
 		Metadata:  metadata,
+		Progress:  *progress,
 		Compression: CompressionConfig{
 			Enabled: false,
 		},
@@ -98,6 +100,7 @@ func runDay9Command(args []string) error {
 		History:   filepath.Join(*historyDir, "compressed.json"),
 		Prompts:   prompts,
 		Metadata:  metadata,
+		Progress:  *progress,
 		Compression: CompressionConfig{
 			Enabled:       true,
 			KeepLastN:     *keepLast,
@@ -125,10 +128,15 @@ type day9RunConfig struct {
 	History     string
 	Prompts     []string
 	Metadata    map[string]modelInfo
+	Progress    bool
 	Compression CompressionConfig
 }
 
 func runDay9Scenario(cfg day9RunConfig) (day9ScenarioResult, error) {
+	if cfg.Progress {
+		fmt.Printf("[%s] start (%d turns)\n", cfg.Name, len(cfg.Prompts))
+	}
+
 	store := NewJSONHistoryStore(cfg.History)
 	if err := store.Reset(); err != nil {
 		return day9ScenarioResult{}, fmt.Errorf("failed to reset %s history: %w", cfg.Name, err)
@@ -158,6 +166,10 @@ func runDay9Scenario(cfg day9RunConfig) (day9ScenarioResult, error) {
 	}
 
 	for i, prompt := range cfg.Prompts {
+		if cfg.Progress {
+			fmt.Printf("[%s] turn %d/%d -> request\n", cfg.Name, i+1, len(cfg.Prompts))
+		}
+
 		reply, err := agent.Reply(prompt)
 		if err != nil {
 			return day9ScenarioResult{}, fmt.Errorf("%s failed on turn %d: %w", cfg.Name, i+1, err)
@@ -183,6 +195,17 @@ func runDay9Scenario(cfg day9RunConfig) (day9ScenarioResult, error) {
 		result.ResponseTokens += turn.ResponseTok
 		result.TotalTokens += turn.TotalTok
 		result.Turns = append(result.Turns, turn)
+		if cfg.Progress {
+			fmt.Printf(
+				"[%s] turn %d/%d <- done (prompt=%d response=%d total=%d)\n",
+				cfg.Name,
+				i+1,
+				len(cfg.Prompts),
+				turn.PromptTok,
+				turn.ResponseTok,
+				turn.TotalTok,
+			)
+		}
 
 		if i == len(cfg.Prompts)-1 {
 			result.FinalAnswer = turn.Answer
@@ -197,6 +220,9 @@ func runDay9Scenario(cfg day9RunConfig) (day9ScenarioResult, error) {
 		result.CompressionStats = fmt.Sprintf("enabled keep_last=%d summary_every=%d", result.KeepLast, result.SummaryEvery)
 	} else {
 		result.CompressionStats = "disabled"
+	}
+	if cfg.Progress {
+		fmt.Printf("[%s] done\n", cfg.Name)
 	}
 
 	return result, nil
@@ -350,5 +376,6 @@ func printDay9Usage() {
 	fmt.Println("  -summary-every int    Compress each N older messages into summary")
 	fmt.Println("  -history-dir string   Directory for scenario history files")
 	fmt.Println("  -report string        Markdown report path")
+	fmt.Println("  -progress             Show live progress per turn")
 	fmt.Println("  -help                 Show help")
 }
