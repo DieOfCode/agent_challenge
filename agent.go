@@ -26,6 +26,13 @@ type LLMAgentConfig struct {
 	Title        string
 	HistoryStore HistoryStore
 	ContextLimit int
+	Compression  CompressionConfig
+}
+
+type CompressionConfig struct {
+	Enabled       bool
+	KeepLastN     int
+	SummaryEveryN int
 }
 
 type LLMAgent struct {
@@ -34,16 +41,19 @@ type LLMAgent struct {
 	maxTokens                int
 	temperature              *float64
 	title                    string
+	systemPrompt             string
 	history                  []message
+	summaries                []string
 	store                    HistoryStore
 	contextLimit             int
 	cumulativePromptTokens   int
 	cumulativeResponseTokens int
+	compression              CompressionConfig
 }
 
 type HistoryStore interface {
-	Load() ([]message, error)
-	Save([]message) error
+	Load() (conversationMemory, error)
+	Save(conversationMemory) error
 	Reset() error
 }
 
@@ -51,9 +61,15 @@ type JSONHistoryStore struct {
 	path string
 }
 
+type conversationMemory struct {
+	Messages  []message
+	Summaries []string
+}
+
 type conversationSnapshot struct {
-	Version  int             `json:"version"`
-	Messages []storedMessage `json:"messages"`
+	Version   int             `json:"version"`
+	Messages  []storedMessage `json:"messages"`
+	Summaries []storedSummary `json:"summaries,omitempty"`
 }
 
 type storedMessage struct {
@@ -62,46 +78,62 @@ type storedMessage struct {
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
+type storedSummary struct {
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
 func NewJSONHistoryStore(path string) *JSONHistoryStore {
 	return &JSONHistoryStore{path: path}
 }
 
-func (s *JSONHistoryStore) Load() ([]message, error) {
+func (s *JSONHistoryStore) Load() (conversationMemory, error) {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return conversationMemory{}, nil
 		}
-		return nil, err
+		return conversationMemory{}, err
 	}
 
 	var snapshot conversationSnapshot
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		return nil, fmt.Errorf("failed to parse history JSON: %w", err)
+		return conversationMemory{}, fmt.Errorf("failed to parse history JSON: %w", err)
 	}
 
-	history := make([]message, 0, len(snapshot.Messages))
+	memory := conversationMemory{
+		Messages:  make([]message, 0, len(snapshot.Messages)),
+		Summaries: make([]string, 0, len(snapshot.Summaries)),
+	}
 	for _, m := range snapshot.Messages {
 		role := strings.TrimSpace(m.Role)
 		content := strings.TrimSpace(m.Content)
 		if role == "" || content == "" {
 			continue
 		}
-		history = append(history, message{
+		memory.Messages = append(memory.Messages, message{
 			Role:    role,
 			Content: content,
 		})
 	}
-	return history, nil
+	for _, s := range snapshot.Summaries {
+		content := strings.TrimSpace(s.Content)
+		if content == "" {
+			continue
+		}
+		memory.Summaries = append(memory.Summaries, content)
+	}
+	return memory, nil
 }
 
-func (s *JSONHistoryStore) Save(history []message) error {
+func (s *JSONHistoryStore) Save(memory conversationMemory) error {
 	snapshot := conversationSnapshot{
-		Version:  1,
-		Messages: make([]storedMessage, 0, len(history)),
+		Version:   2,
+		Messages:  make([]storedMessage, 0, len(memory.Messages)),
+		Summaries: make([]storedSummary, 0, len(memory.Summaries)),
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	for _, m := range history {
+	for _, m := range memory.Messages {
 		role := strings.TrimSpace(m.Role)
 		content := strings.TrimSpace(m.Content)
 		if role == "" || content == "" {
@@ -109,6 +141,16 @@ func (s *JSONHistoryStore) Save(history []message) error {
 		}
 		snapshot.Messages = append(snapshot.Messages, storedMessage{
 			Role:      role,
+			Content:   content,
+			Timestamp: now,
+		})
+	}
+	for _, summary := range memory.Summaries {
+		content := strings.TrimSpace(summary)
+		if content == "" {
+			continue
+		}
+		snapshot.Summaries = append(snapshot.Summaries, storedSummary{
 			Content:   content,
 			Timestamp: now,
 		})
@@ -146,22 +188,42 @@ func (s *JSONHistoryStore) Reset() error {
 
 func NewLLMAgent(cfg LLMAgentConfig) (*LLMAgent, error) {
 	history := make([]message, 0, 16)
+	summaries := make([]string, 0, 8)
+	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
 
 	if cfg.HistoryStore != nil {
-		loadedHistory, err := cfg.HistoryStore.Load()
+		memory, err := cfg.HistoryStore.Load()
 		if err != nil {
 			return nil, fmt.Errorf("failed to load history: %w", err)
 		}
-		if len(loadedHistory) > 0 {
-			history = append(history, loadedHistory...)
+		if len(memory.Summaries) > 0 {
+			summaries = append(summaries, memory.Summaries...)
+		}
+		for _, loaded := range memory.Messages {
+			role := strings.ToLower(strings.TrimSpace(loaded.Role))
+			content := strings.TrimSpace(loaded.Content)
+			if content == "" {
+				continue
+			}
+			if role == "system" {
+				if systemPrompt == "" {
+					systemPrompt = content
+				}
+				continue
+			}
+			history = append(history, message{
+				Role:    loaded.Role,
+				Content: content,
+			})
 		}
 	}
 
-	if len(history) == 0 && strings.TrimSpace(cfg.SystemPrompt) != "" {
-		history = append(history, message{
-			Role:    "system",
-			Content: strings.TrimSpace(cfg.SystemPrompt),
-		})
+	compression := cfg.Compression
+	if compression.KeepLastN <= 0 {
+		compression.KeepLastN = 12
+	}
+	if compression.SummaryEveryN <= 0 {
+		compression.SummaryEveryN = 10
 	}
 
 	return &LLMAgent{
@@ -170,9 +232,12 @@ func NewLLMAgent(cfg LLMAgentConfig) (*LLMAgent, error) {
 		maxTokens:    cfg.MaxTokens,
 		temperature:  cfg.Temperature,
 		title:        cfg.Title,
+		systemPrompt: systemPrompt,
 		history:      history,
+		summaries:    summaries,
 		store:        cfg.HistoryStore,
 		contextLimit: cfg.ContextLimit,
+		compression:  compression,
 	}, nil
 }
 
@@ -197,7 +262,10 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 		return openRouterResult{}, fmt.Errorf("empty user input")
 	}
 
-	historyEstimate := estimateMessagesTokens(a.history)
+	a.compressHistoryIfNeeded()
+
+	contextMessages := a.buildContextMessages()
+	historyEstimate := estimateMessagesTokens(contextMessages)
 	userEstimate := estimateMessageTokens(message{Role: "user", Content: userInput})
 	requestEstimate := historyEstimate + userEstimate
 	if a.contextLimit > 0 && requestEstimate+a.maxTokens > a.contextLimit {
@@ -208,7 +276,7 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 		}
 	}
 
-	requestMessages := append([]message(nil), a.history...)
+	requestMessages := append([]message(nil), contextMessages...)
 	requestMessages = append(requestMessages, message{
 		Role:    "user",
 		Content: userInput,
@@ -232,9 +300,13 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 		message{Role: "user", Content: userInput},
 		message{Role: "assistant", Content: strings.TrimSpace(result.Answer)},
 	)
+	a.compressHistoryIfNeeded()
 
 	if a.store != nil {
-		if err := a.store.Save(a.history); err != nil {
+		if err := a.store.Save(conversationMemory{
+			Messages:  a.history,
+			Summaries: a.summaries,
+		}); err != nil {
 			return openRouterResult{}, fmt.Errorf("failed to save conversation history: %w", err)
 		}
 	}
@@ -272,6 +344,110 @@ func (a *LLMAgent) Reply(userInput string) (openRouterResult, error) {
 	return result, nil
 }
 
+func (a *LLMAgent) buildContextMessages() []message {
+	context := make([]message, 0, 2+len(a.history))
+	if a.systemPrompt != "" {
+		context = append(context, message{
+			Role:    "system",
+			Content: a.systemPrompt,
+		})
+	}
+	if summary := combineSummaries(a.summaries); summary != "" {
+		context = append(context, message{
+			Role:    "system",
+			Content: "Conversation summary (compressed older turns):\n" + summary,
+		})
+	}
+	context = append(context, a.history...)
+	return context
+}
+
+func (a *LLMAgent) compressHistoryIfNeeded() {
+	if !a.compression.Enabled {
+		return
+	}
+	keepLast := a.compression.KeepLastN
+	summaryEvery := a.compression.SummaryEveryN
+	if keepLast < 0 {
+		keepLast = 0
+	}
+	if summaryEvery <= 0 {
+		return
+	}
+
+	for len(a.history)-keepLast >= summaryEvery {
+		chunk := make([]message, 0, summaryEvery)
+		for _, m := range a.history[:summaryEvery] {
+			if strings.EqualFold(strings.TrimSpace(m.Role), "system") {
+				continue
+			}
+			chunk = append(chunk, m)
+		}
+		if summary := summarizeHistoryChunk(chunk); summary != "" {
+			a.summaries = append(a.summaries, summary)
+		}
+		a.history = append([]message(nil), a.history[summaryEvery:]...)
+	}
+}
+
+func summarizeHistoryChunk(chunk []message) string {
+	if len(chunk) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(chunk))
+	for _, m := range chunk {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "" {
+			role = "message"
+		}
+		content := limitWords(normalizeWhitespace(m.Content), 16)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, role+": "+content)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	combined := strings.Join(parts, " | ")
+	r := []rune(combined)
+	if len(r) > 420 {
+		return string(r[:420]) + "..."
+	}
+	return combined
+}
+
+func combineSummaries(summaries []string) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(summaries))
+	for i, summary := range summaries {
+		clean := strings.TrimSpace(summary)
+		if clean == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%d) %s", i+1, clean))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeWhitespace(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func limitWords(text string, maxWords int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxWords <= 0 {
+		return text
+	}
+	words := strings.Fields(text)
+	if len(words) <= maxWords {
+		return strings.Join(words, " ")
+	}
+	return strings.Join(words[:maxWords], " ") + "..."
+}
+
 func runAgentCommand(args []string) error {
 	fs := flag.NewFlagSet("openrouter-cli agent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -283,6 +459,9 @@ func runAgentCommand(args []string) error {
 	temperature := fs.Float64("temperature", 0.2, "Agent temperature")
 	contextLimit := fs.Int("context-limit", 0, "Optional context limit in tokens (0 disables local pre-check)")
 	showTokens := fs.Bool("show-tokens", false, "Print token stats after each response")
+	compressHistory := fs.Bool("compress-history", false, "Enable context compression (summary + last N messages)")
+	keepLast := fs.Int("keep-last", 12, "How many latest messages to keep without compression")
+	summaryEvery := fs.Int("summary-every", 10, "Compress each N older messages into one summary block")
 	historyFile := fs.String("history-file", ".agent_history.json", "Path to JSON file for saved dialogue context")
 	noHistory := fs.Bool("no-history", false, "Disable context persistence")
 	resetHistory := fs.Bool("reset-history", false, "Delete saved history before start")
@@ -324,6 +503,11 @@ func runAgentCommand(args []string) error {
 		Title:        "encapsulated-agent-cli",
 		HistoryStore: historyStore,
 		ContextLimit: *contextLimit,
+		Compression: CompressionConfig{
+			Enabled:       *compressHistory,
+			KeepLastN:     *keepLast,
+			SummaryEveryN: *summaryEvery,
+		},
 	})
 	if err != nil {
 		return err
@@ -416,6 +600,9 @@ func printAgentUsage() {
 	fmt.Println("  -max-tokens int      Maximum response tokens")
 	fmt.Println("  -context-limit int   Optional context limit in tokens")
 	fmt.Println("  -show-tokens         Print token stats for each response")
+	fmt.Println("  -compress-history    Enable history compression")
+	fmt.Println("  -keep-last int       Keep latest N messages as-is")
+	fmt.Println("  -summary-every int   Compress every N older messages")
 	fmt.Println("  -history-file string JSON file for saved context")
 	fmt.Println("  -no-history          Disable context persistence")
 	fmt.Println("  -reset-history       Clear saved context before start")
