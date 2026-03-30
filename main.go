@@ -146,6 +146,11 @@ func main() {
 				exitf("day9 failed: %v", err)
 			}
 			return
+		case "day10":
+			if err := runDay10Command(os.Args[2:]); err != nil {
+				exitf("day10 failed: %v", err)
+			}
+			return
 		case "agent":
 			if err := runAgentCommand(os.Args[2:]); err != nil {
 				exitf("agent failed: %v", err)
@@ -1019,7 +1024,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, and `openrouter-cli day9 --help` for Day 9 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, and `openrouter-cli day10 --help` for Day 10 flags."
 }
 
 func printRootUsage() {
@@ -1042,6 +1047,7 @@ func printChatUsage() {
 	fmt.Println("  day5                Compare weak/mid/strong models by quality, speed, and cost")
 	fmt.Println("  day8                Show token growth on short/long/overflow dialogues")
 	fmt.Println("  day9                Compare full history vs compressed context")
+	fmt.Println("  day10               Compare sliding/facts/branching context strategies")
 }
 
 func printDay3Usage() {
