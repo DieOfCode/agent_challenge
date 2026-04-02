@@ -161,6 +161,11 @@ func main() {
 				exitf("day12 failed: %v", err)
 			}
 			return
+		case "day13":
+			if err := runDay13Command(os.Args[2:]); err != nil {
+				exitf("day13 failed: %v", err)
+			}
+			return
 		case "agent":
 			if err := runAgentCommand(os.Args[2:]); err != nil {
 				exitf("agent failed: %v", err)
@@ -1034,7 +1039,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, and `openrouter-cli day12 --help` for Day 12 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, and `openrouter-cli day13 --help` for Day 13 flags."
 }
 
 func printRootUsage() {
@@ -1060,6 +1065,7 @@ func printChatUsage() {
 	fmt.Println("  day10               Compare sliding/facts/branching context strategies")
 	fmt.Println("  day11               Run layered memory model (short/working/long)")
 	fmt.Println("  day12               Run personalized assistant on top of memory layers")
+	fmt.Println("  day13               Run formal task state machine (planning->execution->validation->done)")
 }
 
 func printDay3Usage() {
