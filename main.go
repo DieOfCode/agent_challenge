@@ -181,6 +181,16 @@ func main() {
 				exitf("day16 failed: %v", err)
 			}
 			return
+		case "day17":
+			if err := runDay17Command(os.Args[2:]); err != nil {
+				exitf("day17 failed: %v", err)
+			}
+			return
+		case "day18":
+			if err := runDay18Command(os.Args[2:]); err != nil {
+				exitf("day18 failed: %v", err)
+			}
+			return
 		case "agent":
 			if err := runAgentCommand(os.Args[2:]); err != nil {
 				exitf("agent failed: %v", err)
@@ -1054,7 +1064,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, and `openrouter-cli day16 --help` for Day 16 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n  openrouter-cli day17 [flags]\n  openrouter-cli day18 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, `openrouter-cli day16 --help` for Day 16 flags, `openrouter-cli day17 --help` for Day 17 flags, and `openrouter-cli day18 --help` for Day 18 flags."
 }
 
 func printRootUsage() {
@@ -1084,6 +1094,8 @@ func printChatUsage() {
 	fmt.Println("  day14               Enforce invariants and refuse conflicting requests")
 	fmt.Println("  day15               Enforce controlled lifecycle with explicit state transitions")
 	fmt.Println("  day16               Connect to MCP and list available tools")
+	fmt.Println("  day17               Use custom MCP tool (API-backed) from an agent")
+	fmt.Println("  day18               Run scheduler MCP tool with periodic summary")
 }
 
 func printDay3Usage() {
