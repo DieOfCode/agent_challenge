@@ -27,6 +27,7 @@ type day19RunResult struct {
 	Search        day19mcp.SearchResult
 	Summary       day19mcp.SummaryResult
 	Save          day19mcp.SaveResult
+	Verify        day19mcp.VerifyResult
 }
 
 func runDay19Command(args []string) error {
@@ -151,6 +152,11 @@ func runDay19Flow(transportMode, query, corpus, corpusSource, outputPath string,
 		return day19RunResult{}, err
 	}
 
+	verifyResult, err := callDay19Verify(ctx, mcpClient, outputPath, summaryResult.Summary)
+	if err != nil {
+		return day19RunResult{}, err
+	}
+
 	return day19RunResult{
 		Transport:     transportLabel,
 		ServerName:    strings.TrimSpace(initRes.ServerInfo.Name),
@@ -161,6 +167,7 @@ func runDay19Flow(transportMode, query, corpus, corpusSource, outputPath string,
 		Search:        searchResult,
 		Summary:       summaryResult,
 		Save:          saveResult,
+		Verify:        verifyResult,
 	}, nil
 }
 
@@ -272,6 +279,33 @@ func callDay19Save(ctx context.Context, mcpClient *client.Client, path, content 
 	return saveResult, nil
 }
 
+func callDay19Verify(ctx context.Context, mcpClient *client.Client, path, expected string) (day19mcp.VerifyResult, error) {
+	toolReq := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: day19mcp.ToolVerifyFile,
+			Arguments: map[string]any{
+				"path":              path,
+				"expected_contains": expected,
+			},
+		},
+	}
+	result, err := mcpClient.CallTool(ctx, toolReq)
+	if err != nil {
+		return day19mcp.VerifyResult{}, fmt.Errorf("verify_file tool call failed: %w", err)
+	}
+	if result == nil {
+		return day19mcp.VerifyResult{}, fmt.Errorf("verify_file tool result is nil")
+	}
+	if result.IsError {
+		return day19mcp.VerifyResult{}, fmt.Errorf("verify_file tool error: %s", day19ToolResultText(result))
+	}
+	verifyResult, err := parseDay19VerifyResult(result)
+	if err != nil {
+		return day19mcp.VerifyResult{}, err
+	}
+	return verifyResult, nil
+}
+
 func parseDay19SearchResult(result *mcp.CallToolResult) (day19mcp.SearchResult, error) {
 	var out day19mcp.SearchResult
 	if parseDay19Structured(result, &out) && out.Query != "" {
@@ -294,6 +328,14 @@ func parseDay19SaveResult(result *mcp.CallToolResult) (day19mcp.SaveResult, erro
 		return out, nil
 	}
 	return day19mcp.SaveResult{}, fmt.Errorf("failed to parse save result")
+}
+
+func parseDay19VerifyResult(result *mcp.CallToolResult) (day19mcp.VerifyResult, error) {
+	var out day19mcp.VerifyResult
+	if parseDay19Structured(result, &out) && out.Path != "" {
+		return out, nil
+	}
+	return day19mcp.VerifyResult{}, fmt.Errorf("failed to parse verify result")
 }
 
 func parseDay19Structured(result *mcp.CallToolResult, out any) bool {
@@ -370,6 +412,10 @@ func printDay19Result(result day19RunResult) {
 		result.Save.Path,
 		result.Save.Bytes,
 	)
+	fmt.Printf("verify_contains=%t verify_bytes=%d\n",
+		result.Verify.Contains,
+		result.Verify.ActualBytes,
+	)
 }
 
 func writeDay19Report(path string, result day19RunResult) error {
@@ -402,7 +448,8 @@ func writeDay19Report(path string, result day19RunResult) error {
 	b.WriteString("\n### Summary\n")
 	b.WriteString(result.Summary.Summary + "\n")
 	b.WriteString(fmt.Sprintf("\n### Saved File\n- path: `%s`\n- bytes: `%d`\n", result.Save.Path, result.Save.Bytes))
-	b.WriteString("\nConclusion: pipeline executed automatically (search -> summarize -> save_to_file) with data passed between tools.\n")
+	b.WriteString(fmt.Sprintf("\n### Verify\n- contains summary: `%t`\n- bytes read: `%d`\n", result.Verify.Contains, result.Verify.ActualBytes))
+	b.WriteString("\nConclusion: pipeline executed automatically (search -> summarize -> save_to_file -> verify_file) with data passed between tools.\n")
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 

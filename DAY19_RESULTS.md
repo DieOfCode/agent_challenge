@@ -13,6 +13,7 @@
 - `save_to_file`
 - `search`
 - `summarize`
+- `verify_file`
 
 ## Pipeline Output
 ### Search Matches
@@ -26,4 +27,8 @@ This corpus contains multiple sentences about MCP tools, pipelines, and backgrou
 - path: `DAY19_PIPELINE_OUTPUT.txt`
 - bytes: `139`
 
-Conclusion: pipeline executed automatically (search -> summarize -> save_to_file) with data passed between tools.
+### Verify
+- contains summary: `true`
+- bytes read: `139`
+
+Conclusion: pipeline executed automatically (search -> summarize -> save_to_file -> verify_file) with data passed between tools.

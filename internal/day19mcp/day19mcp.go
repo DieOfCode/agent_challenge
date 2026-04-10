@@ -17,6 +17,7 @@ const (
 	ToolSearch     = "search"
 	ToolSummarize  = "summarize"
 	ToolSaveToFile = "save_to_file"
+	ToolVerifyFile = "verify_file"
 	DefaultCorpus  = "OpenRouter CLI demo corpus.\n\nThis corpus contains multiple sentences about MCP tools, pipelines, and background tasks.\nIt is designed for testing the search tool, summarization tool, and save-to-file tool.\n\nMCP pipelines pass data from one tool to another.\nSummaries should capture the key points without losing accuracy.\nSaving to file should persist the final output for review."
 )
 
@@ -37,6 +38,14 @@ type SaveResult struct {
 	Path       string `json:"path"`
 	Bytes      int    `json:"bytes"`
 	SavedAtUTC string `json:"saved_at_utc"`
+}
+
+type VerifyResult struct {
+	Path             string `json:"path"`
+	ExpectedContains string `json:"expected_contains"`
+	Contains         bool   `json:"contains"`
+	ActualBytes      int    `json:"actual_bytes"`
+	CheckedAtUTC     string `json:"checked_at_utc"`
 }
 
 func NewServer(name, version string) *server.MCPServer {
@@ -129,6 +138,30 @@ func NewServer(name, version string) *server.MCPServer {
 		},
 	)
 
+	mcpServer.AddTool(
+		mcp.NewTool(
+			ToolVerifyFile,
+			mcp.WithDescription("Verify file contains expected content"),
+			mcp.WithString("path", mcp.Description("File path to verify"), mcp.Required()),
+			mcp.WithString("expected_contains", mcp.Description("Substring expected in file"), mcp.Required()),
+		),
+		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			path := strings.TrimSpace(mcp.ParseString(request, "path", ""))
+			expected := mcp.ParseString(request, "expected_contains", "")
+			if path == "" {
+				return mcp.NewToolResultError("path must be provided"), nil
+			}
+			if expected == "" {
+				return mcp.NewToolResultError("expected_contains must be provided"), nil
+			}
+			verifyResult, err := verifyFileContains(path, expected)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("failed to verify file", err), nil
+			}
+			return structuredResult(verifyResult)
+		},
+	)
+
 	return mcpServer
 }
 
@@ -208,4 +241,19 @@ func LoadCorpusFromFile(path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func verifyFileContains(path, expected string) (VerifyResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	content := string(data)
+	return VerifyResult{
+		Path:             path,
+		ExpectedContains: expected,
+		Contains:         strings.Contains(content, expected),
+		ActualBytes:      len(data),
+		CheckedAtUTC:     time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
