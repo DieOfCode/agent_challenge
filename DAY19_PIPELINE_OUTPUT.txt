@@ -1,0 +1,1 @@
+This corpus contains multiple sentences about MCP tools, pipelines, and background tasks. MCP pipelines pass data from one tool to another.
