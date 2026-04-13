@@ -1,0 +1,7 @@
+Pipeline Summary
+--------------
+This corpus contains multiple sentences about MCP tools, pipelines, and background tasks. MCP pipelines pass data from one tool to another.
+
+Scheduler Snapshot
+------------------
+total_runs=1 window_runs=1 window_minutes=60 last_run=2026-04-13T05:28:29Z
