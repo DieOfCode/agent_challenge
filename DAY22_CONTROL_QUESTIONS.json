@@ -1,0 +1,126 @@
+[
+  {
+    "id": "q1",
+    "question": "Какие стратегии в Day10 получили качество 9/9?",
+    "expectation": "Нужно назвать sliding_window и branching с качеством 9/9.",
+    "expected_terms": [
+      "sliding_window",
+      "branching",
+      "9/9"
+    ],
+    "expected_sources": [
+      "DAY10_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q2",
+    "question": "Какая стратегия в Day10 имеет наименьшее total tokens и сколько именно?",
+    "expectation": "Нужно ответить sliding_window и 11945 total tokens.",
+    "expected_terms": [
+      "sliding_window",
+      "11945"
+    ],
+    "expected_sources": [
+      "DAY10_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q3",
+    "question": "Какие слои памяти описаны в Day11?",
+    "expectation": "Нужно перечислить short-term, working и long-term.",
+    "expected_terms": [
+      "short-term",
+      "working",
+      "long-term"
+    ],
+    "expected_sources": [
+      "DAY11_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q4",
+    "question": "Какие три профиля перечислены в Day12?",
+    "expectation": "Нужно назвать founder-brief, pm-table и dev-json.",
+    "expected_terms": [
+      "founder-brief",
+      "pm-table",
+      "dev-json"
+    ],
+    "expected_sources": [
+      "DAY12_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q5",
+    "question": "Какой финальный stage и статус паузы в Day13?",
+    "expectation": "Нужно ответить stage done и paused false.",
+    "expected_terms": [
+      "done",
+      "false"
+    ],
+    "expected_sources": [
+      "DAY13_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q6",
+    "question": "Сколько инвариантов в Day14 и прошёл ли конфликтный кейс?",
+    "expectation": "Нужно указать invariants count 4 и conflict case passed true.",
+    "expected_terms": [
+      "4",
+      "true"
+    ],
+    "expected_sources": [
+      "DAY14_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q7",
+    "question": "Какой переход в Day15 блокируется без валидации?",
+    "expectation": "Нужно сказать, что blocked jump to done without validation = true.",
+    "expected_terms": [
+      "done",
+      "without validation",
+      "true"
+    ],
+    "expected_sources": [
+      "DAY15_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q8",
+    "question": "Какие инструменты обнаружены в Day16?",
+    "expectation": "Нужно назвать system_time и upper_text.",
+    "expected_terms": [
+      "system_time",
+      "upper_text"
+    ],
+    "expected_sources": [
+      "DAY16_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q9",
+    "question": "Какой todo id вернул create_todo в Day17?",
+    "expectation": "Нужно указать todo id 201.",
+    "expected_terms": [
+      "201",
+      "create_todo"
+    ],
+    "expected_sources": [
+      "DAY17_RESULTS.md"
+    ]
+  },
+  {
+    "id": "q10",
+    "question": "Сколько серверов и шагов в Day20 orchestration?",
+    "expectation": "Нужно указать servers 2 и steps 6.",
+    "expected_terms": [
+      "2",
+      "6"
+    ],
+    "expected_sources": [
+      "DAY20_RESULTS.md"
+    ]
+  }
+]
