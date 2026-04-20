@@ -216,6 +216,11 @@ func main() {
 				exitf("day24 failed: %v", err)
 			}
 			return
+		case "day25":
+			if err := runDay25Command(os.Args[2:]); err != nil {
+				exitf("day25 failed: %v", err)
+			}
+			return
 		case "day18":
 			if err := runDay18Command(os.Args[2:]); err != nil {
 				exitf("day18 failed: %v", err)
@@ -1094,7 +1099,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n  openrouter-cli day17 [flags]\n  openrouter-cli day18 [flags]\n  openrouter-cli day19 [flags]\n  openrouter-cli day20 [flags]\n  openrouter-cli day21 [flags]\n  openrouter-cli day22 [flags]\n  openrouter-cli day23 [flags]\n  openrouter-cli day24 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, `openrouter-cli day16 --help` for Day 16 flags, `openrouter-cli day17 --help` for Day 17 flags, `openrouter-cli day18 --help` for Day 18 flags, `openrouter-cli day19 --help` for Day 19 flags, `openrouter-cli day20 --help` for Day 20 flags, `openrouter-cli day21 --help` for Day 21 flags, `openrouter-cli day22 --help` for Day 22 flags, `openrouter-cli day23 --help` for Day 23 flags, and `openrouter-cli day24 --help` for Day 24 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n  openrouter-cli day17 [flags]\n  openrouter-cli day18 [flags]\n  openrouter-cli day19 [flags]\n  openrouter-cli day20 [flags]\n  openrouter-cli day21 [flags]\n  openrouter-cli day22 [flags]\n  openrouter-cli day23 [flags]\n  openrouter-cli day24 [flags]\n  openrouter-cli day25 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, `openrouter-cli day16 --help` for Day 16 flags, `openrouter-cli day17 --help` for Day 17 flags, `openrouter-cli day18 --help` for Day 18 flags, `openrouter-cli day19 --help` for Day 19 flags, `openrouter-cli day20 --help` for Day 20 flags, `openrouter-cli day21 --help` for Day 21 flags, `openrouter-cli day22 --help` for Day 22 flags, `openrouter-cli day23 --help` for Day 23 flags, `openrouter-cli day24 --help` for Day 24 flags, and `openrouter-cli day25 --help` for Day 25 flags."
 }
 
 func printRootUsage() {
@@ -1132,6 +1137,7 @@ func printChatUsage() {
 	fmt.Println("  day22               Compare answers with and without RAG on local index")
 	fmt.Println("  day23               Rerank/filter retrieval + query rewrite and compare modes")
 	fmt.Println("  day24               Structured grounded RAG with sources/quotes and unsure mode")
+	fmt.Println("  day25               Mini-chat with RAG, sources, and task-state memory")
 }
 
 func printDay3Usage() {
