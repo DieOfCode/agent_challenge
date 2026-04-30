@@ -29,3 +29,11 @@ Day 31 requires at least `git_branch` tool and may use additional tools:
 - `git_diff`: current local diff snapshot
 
 This MCP context is combined with retrieved docs context in `/help` answers.
+
+Day 33 adds support-oriented MCP tools:
+
+- `get_user_profile`: return user profile from JSON/CRM-like source.
+- `get_ticket`: return support ticket details.
+- `list_user_tickets`: return recent tickets for a user.
+
+This context is combined with FAQ/docs retrieval for ticket-aware support answers.

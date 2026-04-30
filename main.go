@@ -256,6 +256,11 @@ func main() {
 				exitf("day32 failed: %v", err)
 			}
 			return
+		case "day33":
+			if err := runDay33Command(os.Args[2:]); err != nil {
+				exitf("day33 failed: %v", err)
+			}
+			return
 		case "day18":
 			if err := runDay18Command(os.Args[2:]); err != nil {
 				exitf("day18 failed: %v", err)
@@ -1134,7 +1139,7 @@ func getAPIKey() string {
 }
 
 func rootUsage() string {
-	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n  openrouter-cli day17 [flags]\n  openrouter-cli day18 [flags]\n  openrouter-cli day19 [flags]\n  openrouter-cli day20 [flags]\n  openrouter-cli day21 [flags]\n  openrouter-cli day22 [flags]\n  openrouter-cli day23 [flags]\n  openrouter-cli day24 [flags]\n  openrouter-cli day25 [flags]\n  openrouter-cli day26 [flags]\n  openrouter-cli day27 [flags]\n  openrouter-cli day28 [flags]\n  openrouter-cli day29 [flags]\n  openrouter-cli day30 [flags]\n  openrouter-cli day31 [flags]\n  openrouter-cli day32 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, `openrouter-cli day16 --help` for Day 16 flags, `openrouter-cli day17 --help` for Day 17 flags, `openrouter-cli day18 --help` for Day 18 flags, `openrouter-cli day19 --help` for Day 19 flags, `openrouter-cli day20 --help` for Day 20 flags, `openrouter-cli day21 --help` for Day 21 flags, `openrouter-cli day22 --help` for Day 22 flags, `openrouter-cli day23 --help` for Day 23 flags, `openrouter-cli day24 --help` for Day 24 flags, `openrouter-cli day25 --help` for Day 25 flags, `openrouter-cli day26 --help` for Day 26 flags, `openrouter-cli day27 --help` for Day 27 flags, `openrouter-cli day28 --help` for Day 28 flags, `openrouter-cli day29 --help` for Day 29 flags, `openrouter-cli day30 --help` for Day 30 flags, `openrouter-cli day31 --help` for Day 31 flags, and `openrouter-cli day32 --help` for Day 32 flags."
+	return "Usage:\n  openrouter-cli [flags]\n  openrouter-cli agent [flags]\n  openrouter-cli day3 [flags]\n  openrouter-cli day4 [flags]\n  openrouter-cli day5 [flags]\n  openrouter-cli day8 [flags]\n  openrouter-cli day9 [flags]\n  openrouter-cli day10 [flags]\n  openrouter-cli day11 [flags]\n  openrouter-cli day12 [flags]\n  openrouter-cli day13 [flags]\n  openrouter-cli day14 [flags]\n  openrouter-cli day15 [flags]\n  openrouter-cli day16 [flags]\n  openrouter-cli day17 [flags]\n  openrouter-cli day18 [flags]\n  openrouter-cli day19 [flags]\n  openrouter-cli day20 [flags]\n  openrouter-cli day21 [flags]\n  openrouter-cli day22 [flags]\n  openrouter-cli day23 [flags]\n  openrouter-cli day24 [flags]\n  openrouter-cli day25 [flags]\n  openrouter-cli day26 [flags]\n  openrouter-cli day27 [flags]\n  openrouter-cli day28 [flags]\n  openrouter-cli day29 [flags]\n  openrouter-cli day30 [flags]\n  openrouter-cli day31 [flags]\n  openrouter-cli day32 [flags]\n  openrouter-cli day33 [flags]\n\nUse `openrouter-cli --help` for chat flags, `openrouter-cli agent --help` for Agent flags, `openrouter-cli day3 --help` for Day 3 flags, `openrouter-cli day4 --help` for Day 4 flags, `openrouter-cli day5 --help` for Day 5 flags, `openrouter-cli day8 --help` for Day 8 flags, `openrouter-cli day9 --help` for Day 9 flags, `openrouter-cli day10 --help` for Day 10 flags, `openrouter-cli day11 --help` for Day 11 flags, `openrouter-cli day12 --help` for Day 12 flags, `openrouter-cli day13 --help` for Day 13 flags, `openrouter-cli day14 --help` for Day 14 flags, `openrouter-cli day15 --help` for Day 15 flags, `openrouter-cli day16 --help` for Day 16 flags, `openrouter-cli day17 --help` for Day 17 flags, `openrouter-cli day18 --help` for Day 18 flags, `openrouter-cli day19 --help` for Day 19 flags, `openrouter-cli day20 --help` for Day 20 flags, `openrouter-cli day21 --help` for Day 21 flags, `openrouter-cli day22 --help` for Day 22 flags, `openrouter-cli day23 --help` for Day 23 flags, `openrouter-cli day24 --help` for Day 24 flags, `openrouter-cli day25 --help` for Day 25 flags, `openrouter-cli day26 --help` for Day 26 flags, `openrouter-cli day27 --help` for Day 27 flags, `openrouter-cli day28 --help` for Day 28 flags, `openrouter-cli day29 --help` for Day 29 flags, `openrouter-cli day30 --help` for Day 30 flags, `openrouter-cli day31 --help` for Day 31 flags, `openrouter-cli day32 --help` for Day 32 flags, and `openrouter-cli day33 --help` for Day 33 flags."
 }
 
 func printRootUsage() {
@@ -1180,6 +1185,7 @@ func printChatUsage() {
 	fmt.Println("  day30               Run private local LLM service with HTTP chat API and limits")
 	fmt.Println("  day31               Developer assistant with /help (RAG docs + MCP git branch)")
 	fmt.Println("  day32               Automated AI PR review (diff + files + RAG context)")
+	fmt.Println("  day33               Support assistant with RAG + MCP users/tickets context")
 }
 
 func printDay3Usage() {

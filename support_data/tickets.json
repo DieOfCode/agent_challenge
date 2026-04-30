@@ -1,0 +1,64 @@
+{
+  "tickets": [
+    {
+      "id": 5001,
+      "user_id": 101,
+      "subject": "Не работает авторизация",
+      "status": "open",
+      "priority": "high",
+      "category": "auth",
+      "summary": "Пользователь не может войти после сброса пароля",
+      "last_error": "invalid_grant",
+      "last_error_code": "AUTH_401",
+      "last_login_at": "2026-04-25T08:11:00Z",
+      "attempts": 6,
+      "affected_feature": "login",
+      "labels": ["login", "password_reset"]
+    },
+    {
+      "id": 5002,
+      "user_id": 101,
+      "subject": "2FA код не приходит",
+      "status": "pending",
+      "priority": "medium",
+      "category": "auth",
+      "summary": "SMS задерживается более 5 минут",
+      "last_error": "sms_delivery_timeout",
+      "last_error_code": "AUTH_2FA_TIMEOUT",
+      "last_login_at": "2026-04-24T19:04:00Z",
+      "attempts": 2,
+      "affected_feature": "2fa",
+      "labels": ["2fa", "sms"]
+    },
+    {
+      "id": 5003,
+      "user_id": 102,
+      "subject": "Не открывается дашборд",
+      "status": "open",
+      "priority": "medium",
+      "category": "ui",
+      "summary": "После логина белый экран",
+      "last_error": "chunk_load_error",
+      "last_error_code": "UI_3001",
+      "last_login_at": "2026-04-28T07:02:00Z",
+      "attempts": 3,
+      "affected_feature": "dashboard",
+      "labels": ["frontend", "cache"]
+    },
+    {
+      "id": 5004,
+      "user_id": 103,
+      "subject": "SSO не пускает пользователей",
+      "status": "open",
+      "priority": "critical",
+      "category": "auth",
+      "summary": "Ошибка подписи токена при SSO-входе",
+      "last_error": "jwt_signature_invalid",
+      "last_error_code": "SSO_403",
+      "last_login_at": "2026-04-29T09:43:00Z",
+      "attempts": 11,
+      "affected_feature": "sso",
+      "labels": ["sso", "enterprise", "blocking"]
+    }
+  ]
+}
